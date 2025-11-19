@@ -69,7 +69,8 @@ static int lolelffs_iterate(struct file *dir, struct dir_context *ctx)
             /* Iterate every file in one block */
             for (; fi < LOLELFFS_FILES_PER_BLOCK; fi++) {
                 f = &dblock->files[fi];
-                if (f->inode && !dir_emit(ctx, f->filename, LOLELFFS_FILENAME_LEN,
+                if (f->inode && !dir_emit(ctx, f->filename,
+                               strnlen(f->filename, LOLELFFS_FILENAME_LEN),
                                f->inode, DT_UNKNOWN))
                     break;
                 ctx->pos++;

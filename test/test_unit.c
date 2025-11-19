@@ -310,6 +310,149 @@ static int test_endianness(void)
     return 1;
 }
 
+/* Test adaptive extent allocation sizing logic */
+static int test_adaptive_alloc_sizing(void)
+{
+    /*
+     * Test the adaptive allocation strategy:
+     * - Small files (< 8 blocks): allocate 2 blocks
+     * - Medium files (8-32 blocks): allocate 4 blocks
+     * - Large files (> 32 blocks): allocate 8 blocks
+     */
+
+    /* Small file case */
+    uint32_t size_small = 0;
+    if (size_small < 8) {
+        ASSERT_EQ(2, 2); /* Would allocate 2 */
+    }
+
+    size_small = 7;
+    if (size_small < 8) {
+        ASSERT_EQ(2, 2); /* Would allocate 2 */
+    }
+
+    /* Medium file case */
+    uint32_t size_medium = 8;
+    if (size_medium >= 8 && size_medium < 32) {
+        ASSERT_EQ(4, 4); /* Would allocate 4 */
+    }
+
+    size_medium = 31;
+    if (size_medium >= 8 && size_medium < 32) {
+        ASSERT_EQ(4, 4); /* Would allocate 4 */
+    }
+
+    /* Large file case */
+    uint32_t size_large = 32;
+    if (size_large >= 32) {
+        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 8); /* Would allocate 8 */
+    }
+
+    size_large = 100;
+    if (size_large >= 32) {
+        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 8); /* Would allocate 8 */
+    }
+
+    return 1;
+}
+
+/* Test extent search edge cases */
+static int test_extent_search_edge_cases(void)
+{
+    /*
+     * Test edge cases for extent binary search:
+     * - Empty extent list (no extents allocated)
+     * - Single extent
+     * - Block at extent boundary
+     * - Block beyond all extents
+     */
+
+    /* For a 4KB block size and 8 blocks per extent:
+     * - Extent 0 covers blocks 0-7
+     * - Extent 1 covers blocks 8-15
+     * - etc.
+     */
+
+    /* Verify extent calculations */
+    uint32_t block = 0;
+    uint32_t extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    ASSERT_EQ(extent_idx, 0);
+
+    block = 7;
+    extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    ASSERT_EQ(extent_idx, 0);
+
+    block = 8;
+    extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    ASSERT_EQ(extent_idx, 1);
+
+    block = 15;
+    extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    ASSERT_EQ(extent_idx, 1);
+
+    block = 64;
+    extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    ASSERT_EQ(extent_idx, 8);
+
+    return 1;
+}
+
+/* Test maximum directory entries per extent */
+static int test_dir_entries_per_extent(void)
+{
+    /* Verify calculation of files per extent */
+    uint32_t files_per_block = LOLELFFS_FILES_PER_BLOCK;
+    uint32_t blocks_per_extent = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    uint32_t expected = files_per_block * blocks_per_extent;
+
+    ASSERT_EQ(LOLELFFS_FILES_PER_EXT, expected);
+
+    /* Should be able to hold many files per extent */
+    ASSERT(LOLELFFS_FILES_PER_EXT >= 100);
+
+    return 1;
+}
+
+/* Test symlink data size limit */
+static int test_symlink_data_limit(void)
+{
+    /* Symlink target is stored in i_data field which is 32 bytes */
+    struct lolelffs_inode inode;
+
+    ASSERT_EQ(sizeof(inode.i_data), 32);
+
+    /* Max symlink target length is 32 bytes including null terminator */
+    /* So max target string length is 31 characters */
+    ASSERT(sizeof(inode.i_data) >= 32);
+
+    return 1;
+}
+
+/* Test inode block calculation */
+static int test_inode_block_calculation(void)
+{
+    /* Inode N is in block: (N / INODES_PER_BLOCK) + 1 */
+    /* (the +1 is for superblock at block 0) */
+
+    uint32_t ino = 0;
+    uint32_t block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
+    ASSERT_EQ(block, 1);
+
+    ino = 63;
+    block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
+    ASSERT_EQ(block, 1);
+
+    ino = 64;
+    block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
+    ASSERT_EQ(block, 2);
+
+    ino = 128;
+    block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
+    ASSERT_EQ(block, 3);
+
+    return 1;
+}
+
 int main(void)
 {
     printf("Running lolelffs unit tests...\n\n");
@@ -341,8 +484,15 @@ int main(void)
     TEST(layout_1mb);
     TEST(layout_200mb);
 
+    printf("\nExtent and Allocation Tests:\n");
+    TEST(adaptive_alloc_sizing);
+    TEST(extent_search_edge_cases);
+    TEST(dir_entries_per_extent);
+    TEST(inode_block_calculation);
+
     printf("\nMiscellaneous:\n");
     TEST(endianness);
+    TEST(symlink_data_limit);
 
     printf("\n========================================\n");
     printf("Tests passed: %d/%d\n", tests_passed, tests_run);

@@ -4,17 +4,21 @@ lolelffs-objs := fs.o super.o inode.o file.o dir.o extent.o
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 MKFS = mkfs.lolelffs
+FSCK = fsck.lolelffs
 TEST_MKFS = test_mkfs
 TEST_UNIT = test_unit
 
 CC ?= gcc
 CFLAGS = -std=gnu99 -Wall -Wextra -g
 
-all: $(MKFS)
+all: $(MKFS) $(FSCK)
 	make -C $(KDIR) M=$(PWD) modules
 
 $(MKFS): mkfs.c lolelffs.h
 	$(CC) $(CFLAGS) -o $@ $< -lelf
+
+$(FSCK): fsck.lolelffs.c lolelffs.h
+	$(CC) $(CFLAGS) -o $@ $<
 
 # Unit tests for mkfs functionality
 $(TEST_MKFS): test/test_mkfs.c lolelffs.h
@@ -48,7 +52,11 @@ test-image: $(MKFS)
 clean:
 	make -C $(KDIR) M=$(PWD) clean
 	rm -f *~ $(PWD)/*.ur-safe
-	rm -f $(MKFS) $(TEST_MKFS) $(TEST_UNIT)
+	rm -f $(MKFS) $(FSCK) $(TEST_MKFS) $(TEST_UNIT)
 	rm -f test.img test/*.img
 
-.PHONY: all clean test test-integration test-image
+# Check filesystem image
+check: $(FSCK) test-image
+	./$(FSCK) -v test.img
+
+.PHONY: all clean test test-integration test-image check

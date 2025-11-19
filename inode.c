@@ -760,7 +760,7 @@ static int lolelffs_link(struct dentry *old_dentry,
 
     if (eblock->nr_files == LOLELFFS_MAX_SUBFILES) {
         ret = -EMLINK;
-        printk(KERN_INFO "directory is full");
+        pr_err("directory is full\n");
         goto end;
     }
 
@@ -849,7 +849,7 @@ static int lolelffs_symlink(struct inode *dir,
 
     if (eblock->nr_files == LOLELFFS_MAX_SUBFILES) {
         ret = -EMLINK;
-        printk(KERN_INFO "directory is full");
+        pr_err("directory is full\n");
         goto end;
     }
 

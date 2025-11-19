@@ -49,15 +49,18 @@ static int lolelffs_file_get_block(struct inode *inode,
      * allocate it. Else, get the physical block number.
      */
     if (index->extents[extent].ee_start == 0) {
+        uint32_t alloc_size;
         if (!create)
             return 0;
-        bno = get_free_blocks(sbi, 8);
+        /* Use adaptive allocation based on current file size */
+        alloc_size = calc_optimal_extent_size(sbi, inode->i_blocks);
+        bno = get_free_blocks(sbi, alloc_size);
         if (!bno) {
             ret = -ENOSPC;
             goto brelse_index;
         }
         index->extents[extent].ee_start = bno;
-        index->extents[extent].ee_len = 8;
+        index->extents[extent].ee_len = alloc_size;
         index->extents[extent].ee_block =
             extent ? index->extents[extent - 1].ee_block +
                          index->extents[extent - 1].ee_len
@@ -108,27 +111,61 @@ static int lolelffs_write_begin(struct file *file,
                                 struct page **pagep,
                                 void **fsdata)
 {
-    struct lolelffs_sb_info *sbi = LOLELFFS_SB(file->f_inode->i_sb);
+    struct inode *inode = file->f_inode;
+    struct super_block *sb = inode->i_sb;
+    struct lolelffs_sb_info *sbi = LOLELFFS_SB(sb);
+    struct lolelffs_inode_info *ci = LOLELFFS_INODE(inode);
+    struct lolelffs_file_ei_block *index;
+    struct buffer_head *bh_index;
     int err;
     uint32_t nr_allocs = 0;
+    uint32_t nr_extents_before = 0;
+    uint32_t i;
 
     /* Check if the write can be completed (enough space?) */
     if (pos + len > LOLELFFS_MAX_FILESIZE)
         return -ENOSPC;
-    nr_allocs = max(pos + len, file->f_inode->i_size) / LOLELFFS_BLOCK_SIZE;
-    if (nr_allocs > file->f_inode->i_blocks - 1)
-        nr_allocs -= file->f_inode->i_blocks - 1;
+    nr_allocs = max(pos + len, inode->i_size) / LOLELFFS_BLOCK_SIZE;
+    if (nr_allocs > inode->i_blocks - 1)
+        nr_allocs -= inode->i_blocks - 1;
     else
         nr_allocs = 0;
     if (nr_allocs > sbi->nr_free_blocks)
         return -ENOSPC;
 
+    /* Count extents before write to track new allocations */
+    bh_index = sb_bread(sb, ci->ei_block);
+    if (!bh_index)
+        return -EIO;
+    index = (struct lolelffs_file_ei_block *) bh_index->b_data;
+    for (i = 0; i < LOLELFFS_MAX_EXTENTS; i++) {
+        if (index->extents[i].ee_start == 0)
+            break;
+        nr_extents_before++;
+    }
+    brelse(bh_index);
+
     /* prepare the write */
     err = block_write_begin(mapping, pos, len, flags, pagep,
                             lolelffs_file_get_block);
+
     /* if this failed, reclaim newly allocated blocks */
-    if (err < 0)
-        pr_err("newly allocated blocks reclaim not implemented yet\n");
+    if (err < 0) {
+        bh_index = sb_bread(sb, ci->ei_block);
+        if (bh_index) {
+            index = (struct lolelffs_file_ei_block *) bh_index->b_data;
+            /* Free any extents allocated during the failed write */
+            for (i = nr_extents_before; i < LOLELFFS_MAX_EXTENTS; i++) {
+                if (index->extents[i].ee_start == 0)
+                    break;
+                put_blocks(sbi, index->extents[i].ee_start,
+                           index->extents[i].ee_len);
+                memset(&index->extents[i], 0, sizeof(struct lolelffs_extent));
+            }
+            mark_buffer_dirty(bh_index);
+            brelse(bh_index);
+        }
+    }
     return err;
 }
 

@@ -89,4 +89,35 @@ static inline void put_blocks(struct lolelffs_sb_info *sbi,
     sbi->nr_free_blocks += len;
 }
 
+/*
+ * Calculate optimal extent allocation size based on current file state.
+ * Strategy:
+ * - Small files (< 8 blocks): allocate 2 blocks to reduce waste
+ * - Medium files (8-32 blocks): allocate 4 blocks
+ * - Large files (> 32 blocks): allocate 8 blocks (max per extent)
+ * Always ensures we don't exceed available free blocks.
+ */
+static inline uint32_t calc_optimal_extent_size(struct lolelffs_sb_info *sbi,
+                                                uint32_t current_blocks)
+{
+    uint32_t alloc_size;
+
+    if (current_blocks < 8)
+        alloc_size = 2;
+    else if (current_blocks < 32)
+        alloc_size = 4;
+    else
+        alloc_size = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+
+    /* Ensure we don't exceed available blocks */
+    if (alloc_size > sbi->nr_free_blocks)
+        alloc_size = sbi->nr_free_blocks;
+
+    /* Minimum allocation is 1 block */
+    if (alloc_size == 0)
+        alloc_size = 1;
+
+    return alloc_size;
+}
+
 #endif /* LOLELFFS_BITMAP_H */

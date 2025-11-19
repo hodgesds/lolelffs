@@ -271,6 +271,13 @@ static int test_block_bitmap(void)
     /* Verify first bit is 0 (superblock is used) */
     ASSERT_EQ(bitmap[0] & 0x01, 0);
 
+    /* Verify all used blocks are marked as 0 in bitmap */
+    for (uint32_t i = 0; i < nr_used && i < 64; i++) {
+        uint8_t byte = bitmap[i / 8];
+        uint8_t bit = (byte >> (i % 8)) & 0x01;
+        ASSERT_EQ(bit, 0);
+    }
+
     close(fd);
     unlink(img);
     return 1;
