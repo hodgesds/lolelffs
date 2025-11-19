@@ -9,14 +9,28 @@
 #define LOLELFFS_SB_SECTION ".lolfs.super"
 
 #define LOLELFFS_BLOCK_SIZE (1 << 12) /* 4 KiB */
+#define LOLELFFS_MAX_BLOCKS_PER_EXTENT 8 /* It can be ~(uint32) 0 */
+
+#define LOLELFFS_FILENAME_LEN 255
+
+/* Extent structure - needed for userspace calculations */
+struct lolelffs_extent {
+    uint32_t ee_block; /* first logical block extent covers */
+    uint32_t ee_len;   /* number of blocks covered by extent */
+    uint32_t ee_start; /* first physical block extent covers */
+};
+
+/* File entry structure - needed for userspace calculations */
+struct lolelffs_file {
+    uint32_t inode;
+    char filename[LOLELFFS_FILENAME_LEN];
+};
+
 #define LOLELFFS_MAX_EXTENTS \
     ((LOLELFFS_BLOCK_SIZE - sizeof(uint32_t)) / sizeof(struct lolelffs_extent))
-#define LOLELFFS_MAX_BLOCKS_PER_EXTENT 8 /* It can be ~(uint32) 0 */
 #define LOLELFFS_MAX_FILESIZE                                      \
     ((uint64_t) LOLELFFS_MAX_BLOCKS_PER_EXTENT *LOLELFFS_BLOCK_SIZE \
         *LOLELFFS_MAX_EXTENTS)
-
-#define LOLELFFS_FILENAME_LEN 255
 
 #define LOLELFFS_FILES_PER_BLOCK \
     (LOLELFFS_BLOCK_SIZE / sizeof(struct lolelffs_file))
@@ -86,23 +100,20 @@ struct lolelffs_sb_info {
 struct lolelffs_inode_info {
     uint32_t ei_block;  /* Block with list of extents for this file */
     char i_data[32];
+    /* Extent cache hints for performance optimization */
+    uint32_t cached_extent_idx;   /* Last accessed extent index */
+    uint32_t cached_extent_count; /* Cached number of used extents */
+    uint32_t cache_valid;         /* Cache validity flags */
     struct inode vfs_inode;
 };
 
-struct lolelffs_extent {
-    uint32_t ee_block; /* first logical block extent covers */
-    uint32_t ee_len;   /* number of blocks covered by extent */
-    uint32_t ee_start; /* first physical block extent covers */
-};
+/* Cache validity flags */
+#define LOLELFFS_CACHE_EXTENT_COUNT  0x01
+#define LOLELFFS_CACHE_EXTENT_IDX    0x02
 
 struct lolelffs_file_ei_block {
     uint32_t nr_files; /* Number of files in directory */
     struct lolelffs_extent extents[LOLELFFS_MAX_EXTENTS];
-};
-
-struct lolelffs_file {
-    uint32_t inode;
-    char filename[LOLELFFS_FILENAME_LEN];
 };
 
 struct lolelffs_dir_block {

@@ -1,5 +1,11 @@
 tags
 mkfs.lolelffs
+fsck.lolelffs
 len_of_name*
 *.elf
 *.o
+test_unit
+test_mkfs
+test_benchmark
+test_stress
+test.img

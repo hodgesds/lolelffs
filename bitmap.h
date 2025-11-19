@@ -10,12 +10,27 @@
  * blocks. Return 0 if no enough free bit(s) were found (we assume that the
  * first bit is never free because of the superblock and the root inode, thus
  * allowing us to use 0 as an error value).
+ *
+ * Optimized version: uses word-at-a-time scanning for single bit allocations
+ * and maintains locality hints for better cache behavior.
  */
 static inline uint32_t get_first_free_bits(unsigned long *freemap,
                                            unsigned long size,
                                            uint32_t len)
 {
     uint32_t bit, prev = 0, count = 0;
+
+    /* Fast path for single bit allocation - use find_first_bit */
+    if (len == 1) {
+        bit = find_first_bit(freemap, size);
+        if (bit < size) {
+            clear_bit(bit, freemap);
+            return bit;
+        }
+        return 0;
+    }
+
+    /* For multiple consecutive bits, scan for runs */
     for_each_set_bit (bit, freemap, size) {
         if (prev != bit - 1)
             count = 0;
@@ -25,6 +40,73 @@ static inline uint32_t get_first_free_bits(unsigned long *freemap,
             return bit - len + 1;
         }
     }
+    return 0;
+}
+
+/*
+ * Search for free bits starting from a hint position.
+ * This improves locality for sequential allocations.
+ */
+static inline uint32_t get_free_bits_from_hint(unsigned long *freemap,
+                                               unsigned long size,
+                                               uint32_t len,
+                                               uint32_t hint)
+{
+    uint32_t bit, prev = 0, count = 0;
+    uint32_t start = hint;
+
+    /* Ensure hint is within bounds */
+    if (start >= size)
+        start = 0;
+
+    /* Fast path for single bit with hint */
+    if (len == 1) {
+        bit = find_next_bit(freemap, size, start);
+        if (bit < size) {
+            clear_bit(bit, freemap);
+            return bit;
+        }
+        /* Wrap around and search from beginning */
+        if (start > 0) {
+            bit = find_first_bit(freemap, start);
+            if (bit < start) {
+                clear_bit(bit, freemap);
+                return bit;
+            }
+        }
+        return 0;
+    }
+
+    /* Search from hint to end */
+    for_each_set_bit_from(bit, freemap, size) {
+        if (bit < start) {
+            bit = start - 1;
+            continue;
+        }
+        if (prev != bit - 1)
+            count = 0;
+        prev = bit;
+        if (++count == len) {
+            bitmap_clear(freemap, bit - len + 1, len);
+            return bit - len + 1;
+        }
+    }
+
+    /* Wrap around and search from beginning to hint */
+    if (start > 0) {
+        prev = 0;
+        count = 0;
+        for_each_set_bit(bit, freemap, start) {
+            if (prev != bit - 1)
+                count = 0;
+            prev = bit;
+            if (++count == len) {
+                bitmap_clear(freemap, bit - len + 1, len);
+                return bit - len + 1;
+            }
+        }
+    }
+
     return 0;
 }
 
