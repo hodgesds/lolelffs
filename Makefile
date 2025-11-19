@@ -9,12 +9,22 @@ TEST_MKFS = test_mkfs
 TEST_UNIT = test_unit
 TEST_BENCHMARK = test_benchmark
 TEST_STRESS = test_stress
+RUST_TOOLS_DIR = lolelffs-tools
 
 CC ?= gcc
 CFLAGS = -std=gnu99 -Wall -Wextra -g -O2
 
-all: $(MKFS) $(FSCK)
+all: $(MKFS) $(FSCK) rust-tools
 	make -C $(KDIR) M=$(PWD) modules
+
+# Build Rust CLI tools
+rust-tools:
+	cd $(RUST_TOOLS_DIR) && cargo build --release
+	cp $(RUST_TOOLS_DIR)/target/release/lolelffs .
+
+rust-tools-debug:
+	cd $(RUST_TOOLS_DIR) && cargo build
+	cp $(RUST_TOOLS_DIR)/target/debug/lolelffs .
 
 $(MKFS): mkfs.c lolelffs.h
 	$(CC) $(CFLAGS) -o $@ $< -lelf
@@ -79,9 +89,11 @@ clean:
 	rm -f *~ $(PWD)/*.ur-safe
 	rm -f $(MKFS) $(FSCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
 	rm -f test.img test/*.img
+	rm -f lolelffs
+	cd $(RUST_TOOLS_DIR) && cargo clean
 
 # Check filesystem image
 check: $(FSCK) test-image
 	./$(FSCK) -v test.img
 
-.PHONY: all clean test test-integration test-image check benchmark stress test-all
+.PHONY: all clean test test-integration test-image check benchmark stress test-all rust-tools rust-tools-debug

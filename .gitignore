@@ -9,3 +9,7 @@ test_mkfs
 test_benchmark
 test_stress
 test.img
+
+# Rust CLI tools
+lolelffs
+lolelffs-tools/target/
