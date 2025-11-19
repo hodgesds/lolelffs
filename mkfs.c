@@ -1,11 +1,9 @@
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/elf.h>
-#include <linux/fs.h>
+#include <libelf.h>
+#include <gelf.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -34,8 +32,6 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
     if (!sb)
         return NULL;
 
-
-
     uint32_t nr_blocks = fstats->st_size / LOLELFFS_BLOCK_SIZE;
     uint32_t nr_inodes = nr_blocks;
     uint32_t mod = nr_inodes % LOLELFFS_INODES_PER_BLOCK;
@@ -45,7 +41,7 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
     uint32_t nr_ifree_blocks = idiv_ceil(nr_inodes, LOLELFFS_BLOCK_SIZE * 8);
     uint32_t nr_bfree_blocks = idiv_ceil(nr_blocks, LOLELFFS_BLOCK_SIZE * 8);
     uint32_t nr_data_blocks =
-        nr_blocks - nr_istore_blocks - nr_ifree_blocks - nr_bfree_blocks;
+        nr_blocks - 1 - nr_istore_blocks - nr_ifree_blocks - nr_bfree_blocks;
 
     memset(sb, 0, sizeof(struct superblock));
     sb->info = (struct lolelffs_sb_info){
@@ -59,7 +55,7 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
         .nr_free_blocks = htole32(nr_data_blocks - 1),
     };
 
-    int ret = write(fd, sb, sizeof(struct superblock));
+    ssize_t ret = write(fd, sb, sizeof(struct superblock));
     if (ret != sizeof(struct superblock)) {
         free(sb);
         return NULL;
@@ -106,7 +102,7 @@ static int write_inode_store(int fd, struct superblock *sb)
     inode->i_nlink = htole32(2);
     inode->ei_block = htole32(first_data_block);
 
-    int ret = write(fd, block, LOLELFFS_BLOCK_SIZE);
+    ssize_t ret = write(fd, block, LOLELFFS_BLOCK_SIZE);
     if (ret != LOLELFFS_BLOCK_SIZE) {
         ret = -1;
         goto end;
@@ -147,7 +143,7 @@ static int write_ifree_blocks(int fd, struct superblock *sb)
 
     /* First ifree block, containing first used inode */
     ifree[0] = htole64(0xfffffffffffffffe);
-    int ret = write(fd, ifree, LOLELFFS_BLOCK_SIZE);
+    ssize_t ret = write(fd, ifree, LOLELFFS_BLOCK_SIZE);
     if (ret != LOLELFFS_BLOCK_SIZE) {
         ret = -1;
         goto end;
@@ -201,7 +197,7 @@ static int write_bfree_blocks(int fd, struct superblock *sb)
         bfree[i] = htole64(line);
         i++;
     }
-    int ret = write(fd, bfree, LOLELFFS_BLOCK_SIZE);
+    ssize_t ret = write(fd, bfree, LOLELFFS_BLOCK_SIZE);
     if (ret != LOLELFFS_BLOCK_SIZE) {
         ret = -1;
         goto end;
@@ -225,9 +221,105 @@ end:
     return ret;
 }
 
+/*
+ * Initialize root directory's extent index block.
+ * This block contains the extent list and nr_files counter.
+ */
 static int write_data_blocks(int fd, struct superblock *sb)
 {
-    /* FIXME: unimplemented */
+    char *block = malloc(LOLELFFS_BLOCK_SIZE);
+    if (!block)
+        return -1;
+
+    /* Initialize the extent index block for root directory */
+    memset(block, 0, LOLELFFS_BLOCK_SIZE);
+
+    /* The first 4 bytes are nr_files (0 for empty directory) */
+    uint32_t *nr_files = (uint32_t *)block;
+    *nr_files = htole32(0);
+
+    /* Extents array follows - all zeros for empty directory */
+    /* First extent will point to data blocks when files are added */
+
+    ssize_t ret = write(fd, block, LOLELFFS_BLOCK_SIZE);
+    if (ret != LOLELFFS_BLOCK_SIZE) {
+        free(block);
+        return -1;
+    }
+
+    printf("Data blocks: wrote root directory extent index block\n");
+
+    free(block);
+    return 0;
+}
+
+/* Check if file is an ELF binary and print info */
+static int check_elf_file(int fd)
+{
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        fprintf(stderr, "ELF library initialization failed: %s\n", elf_errmsg(-1));
+        return -1;
+    }
+
+    Elf *elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf) {
+        fprintf(stderr, "elf_begin() failed: %s\n", elf_errmsg(-1));
+        return -1;
+    }
+
+    if (elf_kind(elf) != ELF_K_ELF) {
+        fprintf(stderr, "Not an ELF file\n");
+        elf_end(elf);
+        return -1;
+    }
+
+    GElf_Ehdr ehdr;
+    if (!gelf_getehdr(elf, &ehdr)) {
+        fprintf(stderr, "gelf_getehdr() failed: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        return -1;
+    }
+
+    printf("ELF file detected:\n");
+    printf("\tClass: %s\n", ehdr.e_ident[EI_CLASS] == ELFCLASS64 ? "64-bit" : "32-bit");
+    printf("\tType: %d\n", ehdr.e_type);
+    printf("\tMachine: %d\n", ehdr.e_machine);
+    printf("\tEntry point: 0x%lx\n", (unsigned long)ehdr.e_entry);
+
+    /* List sections */
+    size_t shstrndx;
+    if (elf_getshdrstrndx(elf, &shstrndx) != 0) {
+        fprintf(stderr, "elf_getshdrstrndx() failed: %s\n", elf_errmsg(-1));
+        elf_end(elf);
+        return -1;
+    }
+
+    Elf_Scn *scn = NULL;
+    int found_lolfs = 0;
+    printf("\tSections:\n");
+    while ((scn = elf_nextscn(elf, scn)) != NULL) {
+        GElf_Shdr shdr;
+        if (gelf_getshdr(scn, &shdr) != &shdr) {
+            fprintf(stderr, "gelf_getshdr() failed: %s\n", elf_errmsg(-1));
+            continue;
+        }
+
+        char *name = elf_strptr(elf, shstrndx, shdr.sh_name);
+        if (name) {
+            printf("\t\t%s (size: %lu, offset: 0x%lx)\n",
+                   name, (unsigned long)shdr.sh_size, (unsigned long)shdr.sh_offset);
+            if (strcmp(name, LOLELFFS_SB_SECTION) == 0) {
+                found_lolfs = 1;
+                printf("\t\t  ^ Found lolelffs superblock section!\n");
+            }
+        }
+    }
+
+    if (!found_lolfs) {
+        printf("\tNote: No %s section found (will be used as raw storage)\n", LOLELFFS_SB_SECTION);
+    }
+
+    elf_end(elf);
     return 0;
 }
 
@@ -244,11 +336,6 @@ int main(int argc, char **argv)
         perror("open():");
         return EXIT_FAILURE;
     }
-    FILE *fp;
-    if (NULL == (fp = fdopen(fd, "w+"))) {
-      perror("fdopen failed");
-      goto fclose;
-   }
 
     /* Get image size */
     struct stat stat_buf;
@@ -256,81 +343,15 @@ int main(int argc, char **argv)
     if (ret) {
         perror("fstat():");
         ret = EXIT_FAILURE;
-        goto fclose;
+        goto close_fd;
     }
 
-    /* Read elf header */
-    //unsigned char e_ident[EI_NIDENT];
-    //if (fread(e_ident, sizeof(e_ident), 1, fp) != 1) {
-    //    perror("not an elf:");
-    //    ret = EXIT_FAILURE;
-    //    goto fclose;
-    //}
-    //fprintf(stdout, "file magic: %c%c%c\n", e_ident[EI_MAG1], e_ident[EI_MAG2], e_ident[EI_MAG3]);
-    //if (e_ident[EI_CLASS] == ELFCLASS32) {
-    //    perror("too lazy for 32 bit support");
-    //    ret = EXIT_FAILURE;
-    //    goto fclose;
-    //}
+    /* Check if it's an ELF file and print info */
+    lseek(fd, 0, SEEK_SET);
+    check_elf_file(fd);
 
-    struct elf64_hdr hdr;
-    if (fread(&hdr, sizeof(hdr), 1, fp) != 1) {
-        perror("not an elf:");
-        ret = EXIT_FAILURE;
-        goto fclose;
-    }
-    fprintf(stdout, "file magic: %c%c%c\n",
-	hdr.e_ident[EI_MAG1], hdr.e_ident[EI_MAG2], hdr.e_ident[EI_MAG3]);
-    fprintf(stdout, "section offset: %lld\n", hdr.e_shoff);
-
-
-    /* Read program header */
-    //Elf64_Phdr *phdr;
-    //if (fread(phdr, sizeof(phdr), 1, fp) != 1) {
-    //    perror("failed to read elf program header:");
-    //    ret = EXIT_FAILURE;
-    //    goto fclose;
-    //}
-    //fprintf(stdout, "program header: %c\n", phdr);
-    //for (unsigned int n1 = 0; n1 < phdr.e_phnum; n1++) {
-    //}
-
-    // see:
-    // https://stackoverflow.com/questions/12159595/how-to-get-a-pointer-to-a-specific-executable-files-section-of-a-program-from-w
-
-    /* Read section headers and search for superblock */
-
-    fseek(fp, hdr.e_shoff, SEEK_SET); //going to the offset of the section
-    Elf64_Shdr sectHdr;
-    if (fread(&sectHdr, sizeof(sectHdr), 1, fp) != 1) {
-        perror("failed to read elf section header:");
-        ret = EXIT_FAILURE;
-        goto fclose;
-    } //reading the size of section
-    fprintf(stdout, "section header:\n\tname: %c size: %lld offset: %lld\n",
-	sectHdr.sh_name, sectHdr.sh_size, sectHdr.sh_offset);
-
-    char* SectNames = NULL;
-    SectNames = malloc(sectHdr.sh_size); //variable for section names (like "Magic", "Data" etc.)
-    // fseek(fp, sectHdr.sh_offset, SEEK_SET); //going to the offset of the section
-    if (fread(SectNames, 1, sectHdr.sh_size, fp) != 1) {
-        perror("failed to read elf section header:");
-        ret = EXIT_FAILURE;
-        goto fclose;
-    } //reading the size of section
-    for(int i=0; i<sectHdr.sh_size; i++)
-    {
-      char *name1 = "";
-      fseek(fp, hdr.e_shoff + i*sizeof(sectHdr), SEEK_SET);
-      if (fread(&sectHdr, 1, sizeof(sectHdr), fp) != 1) {
-        perror("failed to elf section");
-        ret = EXIT_FAILURE;
-        goto fclose;
-      }
-      name1 = SectNames + sectHdr.sh_name;
-      printf("section: %s \n", name1);
-    }
-
+    /* Reset file position for writing */
+    lseek(fd, 0, SEEK_SET);
 
     /* Get block device size */
     if ((stat_buf.st_mode & S_IFMT) == S_IFBLK) {
@@ -339,7 +360,7 @@ int main(int argc, char **argv)
         if (ret != 0) {
             perror("BLKGETSIZE64:");
             ret = EXIT_FAILURE;
-            goto fclose;
+            goto close_fd;
         }
         stat_buf.st_size = blk_size;
     }
@@ -350,7 +371,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "File is not large enough (size=%ld, min size=%ld)\n",
                 stat_buf.st_size, min_size);
         ret = EXIT_FAILURE;
-        goto fclose;
+        goto close_fd;
     }
 
     /* Write superblock (block 0) */
@@ -358,7 +379,7 @@ int main(int argc, char **argv)
     if (!sb) {
         perror("write_superblock():");
         ret = EXIT_FAILURE;
-        goto fclose;
+        goto close_fd;
     }
 
     /* Write inode store blocks (from block 1) */
@@ -393,11 +414,14 @@ int main(int argc, char **argv)
         goto free_sb;
     }
 
+    printf("\nFilesystem created successfully!\n");
+    printf("Total size: %ld bytes (%u blocks)\n",
+           stat_buf.st_size, le32toh(sb->info.nr_blocks));
+
 free_sb:
     free(sb);
-fclose:
+close_fd:
     close(fd);
 
     return ret;
 }
-#include <errno.h>
