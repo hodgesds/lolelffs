@@ -1,0 +1,17 @@
+[package]
+name = "lolelffs-tools"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tools for interacting with lolelffs filesystems"
+authors = ["lolelffs contributors"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+byteorder = "1"
+chrono = "0.4"
+thiserror = "1"
+
+[[bin]]
+name = "lolelffs"
+path = "src/main.rs"
