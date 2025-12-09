@@ -9,6 +9,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <linux/fs.h>
 
 #include "lolelffs.h"
 

@@ -12,7 +12,7 @@ pub const LOLELFFS_BLOCK_SIZE: u32 = 4096;
 pub const LOLELFFS_INODES_PER_BLOCK: u32 = 56;
 
 /// Maximum blocks per extent
-pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT: u32 = 8;
+pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT: u32 = 65536;
 
 /// Maximum extents per file
 pub const LOLELFFS_MAX_EXTENTS: usize = 340;

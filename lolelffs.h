@@ -9,7 +9,7 @@
 #define LOLELFFS_SB_SECTION ".lolfs.super"
 
 #define LOLELFFS_BLOCK_SIZE (1 << 12) /* 4 KiB */
-#define LOLELFFS_MAX_BLOCKS_PER_EXTENT 8 /* It can be ~(uint32) 0 */
+#define LOLELFFS_MAX_BLOCKS_PER_EXTENT 65536 /* It can be ~(uint32) 0 */
 
 #define LOLELFFS_FILENAME_LEN 255
 

@@ -58,9 +58,9 @@ static int test_block_size(void)
 /* Test inode size and count per block */
 static int test_inode_size(void)
 {
-    ASSERT_EQ(sizeof(struct lolelffs_inode), 64);
-    ASSERT_EQ(LOLELFFS_INODES_PER_BLOCK, 4096 / 64);
-    ASSERT_EQ(LOLELFFS_INODES_PER_BLOCK, 64);
+    ASSERT_EQ(sizeof(struct lolelffs_inode), 72);
+    ASSERT_EQ(LOLELFFS_INODES_PER_BLOCK, 4096 / 72);
+    ASSERT_EQ(LOLELFFS_INODES_PER_BLOCK, 56);
     return 1;
 }
 
@@ -80,9 +80,9 @@ static int test_max_filesize(void)
     uint64_t expected = (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT *
                         LOLELFFS_BLOCK_SIZE * LOLELFFS_MAX_EXTENTS;
     ASSERT_EQ(LOLELFFS_MAX_FILESIZE, expected);
-    /* Verify it's approximately 11 MB (8 blocks * 4KB * 340+ extents) */
-    ASSERT(LOLELFFS_MAX_FILESIZE > 10 * 1024 * 1024);
-    ASSERT(LOLELFFS_MAX_FILESIZE < 15 * 1024 * 1024);
+    /* Verify it's approximately 84 GB (65536 blocks * 4KB * 340+ extents) */
+    ASSERT(LOLELFFS_MAX_FILESIZE > 80ULL * 1024 * 1024 * 1024);
+    ASSERT(LOLELFFS_MAX_FILESIZE < 90ULL * 1024 * 1024 * 1024);
     return 1;
 }
 
@@ -163,7 +163,7 @@ static int test_idiv_ceil(void)
 /* Test blocks per extent limit */
 static int test_blocks_per_extent(void)
 {
-    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 8);
+    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536);
     return 1;
 }
 
@@ -216,8 +216,8 @@ static int test_layout_200mb(void)
     uint32_t nr_bfree_blocks = (nr_blocks + LOLELFFS_BLOCK_SIZE * 8 - 1) / (LOLELFFS_BLOCK_SIZE * 8);
 
     /* Verify calculations */
-    ASSERT_EQ(nr_istore_blocks, 800); /* 51200 / 64 = 800 */
-    ASSERT_EQ(nr_ifree_blocks, 2);    /* 51200 / 32768 = ~1.56, ceil = 2 */
+    ASSERT_EQ(nr_istore_blocks, 915); /* 51232 / 56 = 915 (51200 rounded up to multiple of 56) */
+    ASSERT_EQ(nr_ifree_blocks, 2);    /* 51232 / 32768 = ~1.56, ceil = 2 */
     ASSERT_EQ(nr_bfree_blocks, 2);    /* 51200 / 32768 = ~1.56, ceil = 2 */
 
     return 1;
@@ -262,8 +262,11 @@ static int test_file_entry_structure(void)
         char filename[LOLELFFS_FILENAME_LEN];
     };
 
-    size_t expected_size = sizeof(uint32_t) + LOLELFFS_FILENAME_LEN;
-    ASSERT_EQ(sizeof(struct test_file), expected_size);
+    /* The actual size should be at least the sum of components */
+    size_t min_size = sizeof(uint32_t) + LOLELFFS_FILENAME_LEN;
+    ASSERT(sizeof(struct test_file) >= min_size);
+    /* And should not be excessively padded (within 8 bytes of expected) */
+    ASSERT(sizeof(struct test_file) <= min_size + 8);
     return 1;
 }
 
@@ -345,12 +348,12 @@ static int test_adaptive_alloc_sizing(void)
     /* Large file case */
     uint32_t size_large = 32;
     if (size_large >= 32) {
-        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 8); /* Would allocate 8 */
+        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536); /* Would allocate 65536 */
     }
 
     size_large = 100;
     if (size_large >= 32) {
-        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 8); /* Would allocate 8 */
+        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536); /* Would allocate 65536 */
     }
 
     return 1;
@@ -367,9 +370,9 @@ static int test_extent_search_edge_cases(void)
      * - Block beyond all extents
      */
 
-    /* For a 4KB block size and 8 blocks per extent:
-     * - Extent 0 covers blocks 0-7
-     * - Extent 1 covers blocks 8-15
+    /* For a 4KB block size and 65536 blocks per extent:
+     * - Extent 0 covers blocks 0-65535
+     * - Extent 1 covers blocks 65536-131071
      * - etc.
      */
 
@@ -378,19 +381,19 @@ static int test_extent_search_edge_cases(void)
     uint32_t extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 0);
 
-    block = 7;
+    block = 65535;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 0);
 
-    block = 8;
+    block = 65536;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 1);
 
-    block = 15;
+    block = 131071;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 1);
 
-    block = 64;
+    block = 524288;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 8);
 
@@ -438,15 +441,15 @@ static int test_inode_block_calculation(void)
     uint32_t block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
     ASSERT_EQ(block, 1);
 
-    ino = 63;
+    ino = 55;
     block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
     ASSERT_EQ(block, 1);
 
-    ino = 64;
+    ino = 56;
     block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
     ASSERT_EQ(block, 2);
 
-    ino = 128;
+    ino = 112;
     block = (ino / LOLELFFS_INODES_PER_BLOCK) + 1;
     ASSERT_EQ(block, 3);
 

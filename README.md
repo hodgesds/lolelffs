@@ -166,11 +166,11 @@ lolelffs write -i test_runner /fixtures/test_data.json -c '{"test": true}'
 | Metric | Value |
 |--------|-------|
 | Block size | 4 KB (fixed) |
-| Maximum file size | ~11 MB |
+| Maximum file size | ~84 GB |
 | Maximum filename | 255 characters |
 | Maximum files per directory | 40,920 |
 | Inodes per block | 56 |
-| Blocks per extent | 8 |
+| Blocks per extent | 65,536 |
 
 ### Tooling
 
@@ -576,10 +576,10 @@ struct lolelffs_file {
 BLOCK_SIZE = 4096 bytes
 INODES_PER_BLOCK = 4096 / 72 = 56
 MAX_EXTENTS = (4096 - 4) / 12 = 340
-BLOCKS_PER_EXTENT = 8
+BLOCKS_PER_EXTENT = 65536
 FILES_PER_BLOCK = 4096 / 259 = 15
-MAX_FILESIZE = 8 × 4096 × 340 = 11,010,048 bytes (~10.5 MB)
-MAX_FILES_PER_DIR = 15 × 340 × 8 = 40,920
+MAX_FILESIZE = 65536 × 4096 × 340 = 90,177,536,000 bytes (~84 GB)
+MAX_FILES_PER_DIR = 15 × 340 × 65536 = 334,668,800
 ```
 
 ### ELF Integration
@@ -626,7 +626,7 @@ The extent search uses binary search with locality hints:
 ## Limitations
 
 - **Block size**: Fixed at 4 KB (cannot be changed)
-- **Maximum file size**: ~11 MB per file
+- **Maximum file size**: ~84 GB per file
 - **No extended attributes**: xattr not supported
 - **No journaling**: Not crash-safe
 - **No encryption**: Data stored in plaintext

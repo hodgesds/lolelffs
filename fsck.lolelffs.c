@@ -20,13 +20,6 @@
 
 #include "lolelffs.h"
 
-/* Extent structure for userspace */
-struct lolelffs_extent {
-    uint32_t ee_block;
-    uint32_t ee_len;
-    uint32_t ee_start;
-};
-
 /* File entry index block for userspace */
 struct lolelffs_file_ei_block {
     uint32_t nr_files;
