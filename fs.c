@@ -1,25 +1,38 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/fs.h>
+#include <linux/fs_context.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 
 #include "lolelffs.h"
 
-/* Mount a lolelffs partition */
-struct dentry *lolelffs_mount(struct file_system_type *fs_type,
-                              int flags,
-                              const char *dev_name,
-                              void *data)
+/* Wrapper for fill_super to match new kernel API */
+static int lolelffs_fill_super_fc(struct super_block *sb, struct fs_context *fc)
 {
-    struct dentry *dentry =
-        mount_bdev(fs_type, flags, dev_name, data, lolelffs_fill_super);
-    if (IS_ERR(dentry))
-        pr_err("'%s' mount failure\n", dev_name);
-    else
-        pr_info("'%s' mount success\n", dev_name);
+    return lolelffs_fill_super(sb, fc->fs_private, fc->sb_flags & SB_SILENT);
+}
 
-    return dentry;
+/* Mount a lolelffs partition */
+static int lolelffs_get_tree(struct fs_context *fc)
+{
+    int ret = get_tree_bdev(fc, lolelffs_fill_super_fc);
+    if (ret)
+        pr_err("mount failure\n");
+    else
+        pr_info("mount success\n");
+
+    return ret;
+}
+
+static const struct fs_context_operations lolelffs_context_ops = {
+    .get_tree = lolelffs_get_tree,
+};
+
+static int lolelffs_init_fs_context(struct fs_context *fc)
+{
+    fc->ops = &lolelffs_context_ops;
+    return 0;
 }
 
 /* Unmount a lolelffs partition */
@@ -33,7 +46,7 @@ void lolelffs_kill_sb(struct super_block *sb)
 static struct file_system_type lolelffs_file_system_type = {
     .owner = THIS_MODULE,
     .name = "lolelffs",
-    .mount = lolelffs_mount,
+    .init_fs_context = lolelffs_init_fs_context,
     .kill_sb = lolelffs_kill_sb,
     .fs_flags = FS_REQUIRES_DEV,
     .next = NULL,

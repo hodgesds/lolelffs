@@ -50,16 +50,25 @@ struct inode *lolelffs_iget(struct super_block *sb, unsigned long ino)
     inode->i_sb = sb;
     inode->i_op = &lolelffs_inode_ops;
 
+    struct timespec64 ts;
+
     inode->i_mode = le32_to_cpu(cinode->i_mode);
     i_uid_write(inode, le32_to_cpu(cinode->i_uid));
     i_gid_write(inode, le32_to_cpu(cinode->i_gid));
     inode->i_size = le32_to_cpu(cinode->i_size);
-    inode->i_ctime.tv_sec = (time64_t) le32_to_cpu(cinode->i_ctime);
-    inode->i_ctime.tv_nsec = 0;
-    inode->i_atime.tv_sec = (time64_t) le32_to_cpu(cinode->i_atime);
-    inode->i_atime.tv_nsec = 0;
-    inode->i_mtime.tv_sec = (time64_t) le32_to_cpu(cinode->i_mtime);
-    inode->i_mtime.tv_nsec = 0;
+
+    ts.tv_sec = (time64_t) le32_to_cpu(cinode->i_ctime);
+    ts.tv_nsec = 0;
+    inode_set_ctime_to_ts(inode, ts);
+
+    ts.tv_sec = (time64_t) le32_to_cpu(cinode->i_atime);
+    ts.tv_nsec = 0;
+    inode_set_atime_to_ts(inode, ts);
+
+    ts.tv_sec = (time64_t) le32_to_cpu(cinode->i_mtime);
+    ts.tv_nsec = 0;
+    inode_set_mtime_to_ts(inode, ts);
+
     inode->i_blocks = le32_to_cpu(cinode->i_blocks);
     set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
@@ -150,7 +159,10 @@ search_end:
     brelse(bh);
 
     /* Update directory access time */
-    dir->i_atime = current_time(dir);
+    {
+        struct timespec64 now = current_time(dir);
+        inode_set_atime_to_ts(dir, now);
+    }
     mark_inode_dirty(dir);
 
     /* Fill the dentry with the inode */
@@ -195,13 +207,20 @@ static struct inode *lolelffs_new_inode(struct inode *dir, mode_t mode)
     }
 
     if (S_ISLNK(mode)) {
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+        inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
+#elif USER_NS_REQUIRED()
         inode_init_owner(&init_user_ns, inode, dir, mode);
 #else
         inode_init_owner(inode, dir, mode);
 #endif
         set_nlink(inode, 1);
-        inode->i_ctime = inode->i_atime = inode->i_mtime = current_time(inode);
+        {
+            struct timespec64 now = current_time(inode);
+            inode_set_ctime_to_ts(inode, now);
+            inode_set_atime_to_ts(inode, now);
+            inode_set_mtime_to_ts(inode, now);
+        }
         inode->i_op = &symlink_inode_ops;
         return inode;
     }
@@ -216,7 +235,9 @@ static struct inode *lolelffs_new_inode(struct inode *dir, mode_t mode)
     }
 
     /* Initialize inode */
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+    inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
+#elif USER_NS_REQUIRED()
     inode_init_owner(&init_user_ns, inode, dir, mode);
 #else
     inode_init_owner(inode, dir, mode);
@@ -235,7 +256,12 @@ static struct inode *lolelffs_new_inode(struct inode *dir, mode_t mode)
         set_nlink(inode, 1);
     }
 
-    inode->i_ctime = inode->i_atime = inode->i_mtime = current_time(inode);
+    {
+        struct timespec64 now = current_time(inode);
+        inode_set_ctime_to_ts(inode, now);
+        inode_set_atime_to_ts(inode, now);
+        inode_set_mtime_to_ts(inode, now);
+    }
 
     return inode;
 
@@ -254,7 +280,13 @@ put_ino:
  *   - cleanup index block of the new inode
  *   - add new file/directory in parent index
  */
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+static int lolelffs_create(struct mnt_idmap *idmap,
+                           struct inode *dir,
+                           struct dentry *dentry,
+                           umode_t mode,
+                           bool excl)
+#elif USER_NS_REQUIRED()
 static int lolelffs_create(struct user_namespace *ns,
                            struct inode *dir,
                            struct dentry *dentry,
@@ -355,7 +387,12 @@ static int lolelffs_create(struct inode *dir,
 
     /* Update stats and mark dir and new inode dirty */
     mark_inode_dirty(inode);
-    dir->i_mtime = dir->i_atime = dir->i_ctime = current_time(dir);
+    {
+        struct timespec64 now = current_time(dir);
+        inode_set_mtime_to_ts(dir, now);
+        inode_set_atime_to_ts(dir, now);
+        inode_set_ctime_to_ts(dir, now);
+    }
     if (S_ISDIR(mode))
         inc_nlink(dir);
     mark_inode_dirty(dir);
@@ -484,7 +521,12 @@ static int lolelffs_unlink(struct inode *dir, struct dentry *dentry)
         goto clean_inode;
 
     /* Update inode stats */
-    dir->i_mtime = dir->i_atime = dir->i_ctime = current_time(dir);
+    {
+        struct timespec64 now = current_time(dir);
+        inode_set_mtime_to_ts(dir, now);
+        inode_set_atime_to_ts(dir, now);
+        inode_set_ctime_to_ts(dir, now);
+    }
     if (S_ISDIR(inode->i_mode)) {
         drop_nlink(dir);
         drop_nlink(inode);
@@ -538,15 +580,21 @@ scrub:
 
 clean_inode:
     /* Cleanup inode and mark dirty */
-    inode->i_blocks = 0;
-    LOLELFFS_INODE(inode)->ei_block = 0;
-    inode->i_size = 0;
-    i_uid_write(inode, 0);
-    i_gid_write(inode, 0);
-    inode->i_mode = 0;
-    inode->i_ctime.tv_sec = inode->i_mtime.tv_sec = inode->i_atime.tv_sec = 0;
-    drop_nlink(inode);
-    mark_inode_dirty(inode);
+    {
+        struct timespec64 zero_ts = {0, 0};
+
+        inode->i_blocks = 0;
+        LOLELFFS_INODE(inode)->ei_block = 0;
+        inode->i_size = 0;
+        i_uid_write(inode, 0);
+        i_gid_write(inode, 0);
+        inode->i_mode = 0;
+        inode_set_ctime_to_ts(inode, zero_ts);
+        inode_set_mtime_to_ts(inode, zero_ts);
+        inode_set_atime_to_ts(inode, zero_ts);
+        drop_nlink(inode);
+        mark_inode_dirty(inode);
+    }
 
     /* Free inode and index block from bitmap */
     put_blocks(sbi, bno, 1);
@@ -555,7 +603,14 @@ clean_inode:
     return ret;
 }
 
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+static int lolelffs_rename(struct mnt_idmap *idmap,
+                           struct inode *old_dir,
+                           struct dentry *old_dentry,
+                           struct inode *new_dir,
+                           struct dentry *new_dentry,
+                           unsigned int flags)
+#elif USER_NS_REQUIRED()
 static int lolelffs_rename(struct user_namespace *ns,
                            struct inode *old_dir,
                            struct dentry *old_dentry,
@@ -668,8 +723,12 @@ static int lolelffs_rename(struct inode *old_dir,
     brelse(bh2);
 
     /* Update new parent inode metadata */
-    new_dir->i_atime = new_dir->i_ctime = new_dir->i_mtime =
-        current_time(new_dir);
+    {
+        struct timespec64 now = current_time(new_dir);
+        inode_set_atime_to_ts(new_dir, now);
+        inode_set_ctime_to_ts(new_dir, now);
+        inode_set_mtime_to_ts(new_dir, now);
+    }
     if (S_ISDIR(src->i_mode))
         inc_nlink(new_dir);
     mark_inode_dirty(new_dir);
@@ -680,8 +739,12 @@ static int lolelffs_rename(struct inode *old_dir,
         goto release_new;
 
     /* Update old parent inode metadata */
-    old_dir->i_atime = old_dir->i_ctime = old_dir->i_mtime =
-        current_time(old_dir);
+    {
+        struct timespec64 now = current_time(old_dir);
+        inode_set_atime_to_ts(old_dir, now);
+        inode_set_ctime_to_ts(old_dir, now);
+        inode_set_mtime_to_ts(old_dir, now);
+    }
     if (S_ISDIR(src->i_mode))
         drop_nlink(old_dir);
     mark_inode_dirty(old_dir);
@@ -699,7 +762,16 @@ release_new:
     return ret;
 }
 
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+static struct dentry *lolelffs_mkdir(struct mnt_idmap *idmap,
+                                     struct inode *dir,
+                                     struct dentry *dentry,
+                                     umode_t mode)
+{
+    int err = lolelffs_create(idmap, dir, dentry, mode | S_IFDIR, 0);
+    return err ? ERR_PTR(err) : NULL;
+}
+#elif USER_NS_REQUIRED()
 static int lolelffs_mkdir(struct user_namespace *ns,
                           struct inode *dir,
                           struct dentry *dentry,
@@ -815,7 +887,12 @@ end:
     return ret;
 }
 
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+static int lolelffs_symlink(struct mnt_idmap *idmap,
+                            struct inode *dir,
+                            struct dentry *dentry,
+                            const char *symname)
+#elif USER_NS_REQUIRED()
 static int lolelffs_symlink(struct user_namespace *ns,
                             struct inode *dir,
                             struct dentry *dentry,

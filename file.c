@@ -81,21 +81,22 @@ brelse_index:
 }
 
 /*
- * Called by the page cache to read a page from the physical disk and map it in
+ * Called by the page cache to read a folio from the physical disk and map it in
  * memory.
  */
-static int lolelffs_readpage(struct file *file, struct page *page)
+static int lolelffs_read_folio(struct file *file, struct folio *folio)
 {
-    return mpage_readpage(page, lolelffs_file_get_block);
+    return mpage_read_folio(folio, lolelffs_file_get_block);
 }
 
 /*
- * Called by the page cache to write a dirty page to the physical disk (when
+ * Called by the page cache to write a dirty folio to the physical disk (when
  * sync is called or when memory is needed).
  */
-static int lolelffs_writepage(struct page *page, struct writeback_control *wbc)
+static int lolelffs_writepages(struct address_space *mapping,
+                               struct writeback_control *wbc)
 {
-    return block_write_full_page(page, lolelffs_file_get_block, wbc);
+    return mpage_writepages(mapping, wbc, lolelffs_file_get_block);
 }
 
 /*
@@ -103,15 +104,14 @@ static int lolelffs_writepage(struct page *page, struct writeback_control *wbc)
  * data in the page cache. This functions checks if the write will be able to
  * complete and allocates the necessary blocks through block_write_begin().
  */
-static int lolelffs_write_begin(struct file *file,
+static int lolelffs_write_begin(const struct kiocb *iocb,
                                 struct address_space *mapping,
                                 loff_t pos,
                                 unsigned int len,
-                                unsigned int flags,
-                                struct page **pagep,
+                                struct folio **foliop,
                                 void **fsdata)
 {
-    struct inode *inode = file->f_inode;
+    struct inode *inode = mapping->host;
     struct super_block *sb = inode->i_sb;
     struct lolelffs_sb_info *sbi = LOLELFFS_SB(sb);
     struct lolelffs_inode_info *ci = LOLELFFS_INODE(inode);
@@ -146,7 +146,7 @@ static int lolelffs_write_begin(struct file *file,
     brelse(bh_index);
 
     /* prepare the write */
-    err = block_write_begin(mapping, pos, len, flags, pagep,
+    err = block_write_begin(mapping, pos, len, foliop,
                             lolelffs_file_get_block);
 
     /* if this failed, reclaim newly allocated blocks */
@@ -174,21 +174,21 @@ static int lolelffs_write_begin(struct file *file,
  * cache. This functions updates inode metadata and truncates the file if
  * necessary.
  */
-static int lolelffs_write_end(struct file *file,
+static int lolelffs_write_end(const struct kiocb *iocb,
                               struct address_space *mapping,
                               loff_t pos,
                               unsigned int len,
                               unsigned int copied,
-                              struct page *page,
+                              struct folio *folio,
                               void *fsdata)
 {
-    struct inode *inode = file->f_inode;
+    struct inode *inode = mapping->host;
     struct lolelffs_inode_info *ci = LOLELFFS_INODE(inode);
     struct super_block *sb = inode->i_sb;
     uint32_t nr_blocks_old;
 
     /* Complete the write() */
-    int ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
+    int ret = generic_write_end(iocb, mapping, pos, len, copied, folio, fsdata);
     if (ret < len) {
         pr_err("wrote less than requested.");
         return ret;
@@ -198,7 +198,11 @@ static int lolelffs_write_end(struct file *file,
 
     /* Update inode metadata */
     inode->i_blocks = inode->i_size / LOLELFFS_BLOCK_SIZE + 2;
-    inode->i_mtime = inode->i_ctime = current_time(inode);
+    {
+        struct timespec64 now = current_time(inode);
+        inode_set_mtime_to_ts(inode, now);
+        inode_set_ctime_to_ts(inode, now);
+    }
     mark_inode_dirty(inode);
 
     /* If file is smaller than before, free unused blocks */
@@ -214,8 +218,7 @@ static int lolelffs_write_end(struct file *file,
         /* Read ei_block to remove unused blocks */
         bh_index = sb_bread(sb, ci->ei_block);
         if (!bh_index) {
-            pr_err("failed truncating '%s'. we just lost %llu blocks\n",
-                   file->f_path.dentry->d_name.name,
+            pr_err("failed truncating file. we just lost %llu blocks\n",
                    nr_blocks_old - inode->i_blocks);
             goto end;
         }
@@ -241,8 +244,8 @@ end:
 }
 
 const struct address_space_operations lolelffs_aops = {
-    .readpage = lolelffs_readpage,
-    .writepage = lolelffs_writepage,
+    .read_folio = lolelffs_read_folio,
+    .writepages = lolelffs_writepages,
     .write_begin = lolelffs_write_begin,
     .write_end = lolelffs_write_end,
 };

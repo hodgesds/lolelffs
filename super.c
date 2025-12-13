@@ -69,9 +69,9 @@ static int lolelffs_write_inode(struct inode *inode,
     disk_inode->i_uid = i_uid_read(inode);
     disk_inode->i_gid = i_gid_read(inode);
     disk_inode->i_size = inode->i_size;
-    disk_inode->i_ctime = inode->i_ctime.tv_sec;
-    disk_inode->i_atime = inode->i_atime.tv_sec;
-    disk_inode->i_mtime = inode->i_mtime.tv_sec;
+    disk_inode->i_ctime = inode_get_ctime_sec(inode);
+    disk_inode->i_atime = inode_get_atime_sec(inode);
+    disk_inode->i_mtime = inode_get_mtime_sec(inode);
     disk_inode->i_blocks = inode->i_blocks;
     disk_inode->i_nlink = inode->i_nlink;
     disk_inode->ei_block = ci->ei_block;
@@ -228,6 +228,9 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     sbi->nr_free_blocks = csb->nr_free_blocks;
     sb->s_fs_info = sbi;
 
+    /* Initialize mutex for bitmap operations */
+    mutex_init(&sbi->lock);
+
     brelse(bh);
 
     /* Alloc and copy ifree_bitmap */
@@ -282,7 +285,9 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
         ret = PTR_ERR(root_inode);
         goto free_bfree;
     }
-#if USER_NS_REQUIRED()
+#if MNT_IDMAP_REQUIRED()
+    inode_init_owner(&nop_mnt_idmap, root_inode, NULL, root_inode->i_mode);
+#elif USER_NS_REQUIRED()
     inode_init_owner(&init_user_ns, root_inode, NULL, root_inode->i_mode);
 #else
     inode_init_owner(root_inode, NULL, root_inode->i_mode);

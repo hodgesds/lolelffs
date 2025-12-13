@@ -26,6 +26,22 @@ rust-tools-debug:
 	cd $(RUST_TOOLS_DIR) && cargo build
 	cp $(RUST_TOOLS_DIR)/target/debug/lolelffs .
 
+# Build FUSE driver
+fuse: rust-tools
+	@echo "Building FUSE driver (release)..."
+	cd $(RUST_TOOLS_DIR) && cargo build --release -p lolelffs-fuse
+	cp $(RUST_TOOLS_DIR)/target/release/lolelffs-fuse .
+
+fuse-debug: rust-tools-debug
+	@echo "Building FUSE driver (debug)..."
+	cd $(RUST_TOOLS_DIR) && cargo build -p lolelffs-fuse
+	cp $(RUST_TOOLS_DIR)/target/debug/lolelffs-fuse .
+
+# Install FUSE driver
+install-fuse: fuse
+	@echo "Installing lolelffs-fuse to /usr/local/bin/"
+	install -m 755 lolelffs-fuse /usr/local/bin/
+
 $(MKFS): mkfs.c lolelffs.h
 	$(CC) $(CFLAGS) -o $@ $< -lelf
 
@@ -89,11 +105,11 @@ clean:
 	rm -f *~ $(PWD)/*.ur-safe
 	rm -f $(MKFS) $(FSCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
 	rm -f test.img test/*.img
-	rm -f lolelffs
+	rm -f lolelffs lolelffs-fuse
 	cd $(RUST_TOOLS_DIR) && cargo clean
 
 # Check filesystem image
 check: $(FSCK) test-image
 	./$(FSCK) -v test.img
 
-.PHONY: all clean test test-integration test-image check benchmark stress test-all rust-tools rust-tools-debug
+.PHONY: all clean test test-integration test-image check benchmark stress test-all rust-tools rust-tools-debug fuse fuse-debug install-fuse

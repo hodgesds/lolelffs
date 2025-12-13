@@ -41,7 +41,9 @@ struct lolelffs_file {
     (LOLELFFS_FILES_PER_EXT *LOLELFFS_MAX_EXTENTS)
 
 
-#define USER_NS_REQUIRED() LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
+#include <linux/version.h>
+#define USER_NS_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0) && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0))
+#define MNT_IDMAP_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0))
 
 /*
  * lolelffs partition layout (within a .lolfs elf section)
@@ -92,6 +94,7 @@ struct lolelffs_sb_info {
 #ifdef __KERNEL__
     unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
     unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
+    struct mutex lock; /* Protects bitmap and free counters */
 #endif
 };
 
