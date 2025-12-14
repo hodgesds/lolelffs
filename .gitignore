@@ -13,3 +13,16 @@ test.img
 # Rust CLI tools
 lolelffs
 lolelffs-tools/target/
+
+# Kernel module build artifacts
+*.ko
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order
+
+# Test and build artifacts
+*.img
+lolelffs_with_fs
+lolelffs_with_fs.orig
