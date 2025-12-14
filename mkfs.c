@@ -226,7 +226,7 @@ end:
  * Initialize root directory's extent index block.
  * This block contains the extent list and nr_files counter.
  */
-static int write_data_blocks(int fd, struct superblock *sb)
+static int write_data_blocks(int fd)
 {
     char *block = malloc(LOLELFFS_BLOCK_SIZE);
     if (!block)
@@ -408,7 +408,7 @@ int main(int argc, char **argv)
     }
 
     /* Write data blocks */
-    ret = write_data_blocks(fd, sb);
+    ret = write_data_blocks(fd);
     if (ret) {
         perror("write_data_blocks():");
         ret = EXIT_FAILURE;

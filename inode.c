@@ -38,7 +38,7 @@ struct inode *lolelffs_iget(struct super_block *sb, unsigned long ino)
 
     ci = LOLELFFS_INODE(inode);
     /* Read inode from disk and initialize */
-    bh = sb_bread(sb, inode_block);
+    bh = LOLELFFS_SB_BREAD(sb, inode_block);
     if (!bh) {
         ret = -EIO;
         goto failed;
@@ -121,7 +121,7 @@ static struct dentry *lolelffs_lookup(struct inode *dir,
         return ERR_PTR(-ENAMETOOLONG);
 
     /* Read the directory block on disk */
-    bh = sb_bread(sb, ci_dir->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, ci_dir->ei_block);
     if (!bh)
         return ERR_PTR(-EIO);
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -133,7 +133,7 @@ static struct dentry *lolelffs_lookup(struct inode *dir,
 
         /* Iterate blocks in extent */
         for (bi = 0; bi < eblock->extents[ei].ee_len; bi++) {
-            bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+            bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
             if (!bh2)
                 return ERR_PTR(-EIO);
             dblock = (struct lolelffs_dir_block *) bh2->b_data;
@@ -316,7 +316,7 @@ static int lolelffs_create(struct inode *dir,
     /* Read parent directory index */
     ci_dir = LOLELFFS_INODE(dir);
     sb = dir->i_sb;
-    bh = sb_bread(sb, ci_dir->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, ci_dir->ei_block);
     if (!bh)
         return -EIO;
 
@@ -338,7 +338,7 @@ static int lolelffs_create(struct inode *dir,
      * Scrub ei_block for new file/directory to avoid previous data
      * messing with new file/directory.
      */
-    bh2 = sb_bread(sb, LOLELFFS_INODE(inode)->ei_block);
+    bh2 = LOLELFFS_SB_BREAD(sb, LOLELFFS_INODE(inode)->ei_block);
     if (!bh2) {
         ret = -EIO;
         goto iput;
@@ -368,7 +368,7 @@ static int lolelffs_create(struct inode *dir,
                : 0;
         alloc = true;
     }
-    bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+    bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
     if (!bh2) {
         ret = -EIO;
         goto put_block;
@@ -428,7 +428,7 @@ static int lolelffs_remove_from_dir(struct inode *dir, struct dentry *dentry)
     int ret = 0, found = false;
 
     /* Read parent directory index */
-    bh = sb_bread(sb, LOLELFFS_INODE(dir)->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, LOLELFFS_INODE(dir)->ei_block);
     if (!bh)
         return -EIO;
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -437,7 +437,7 @@ static int lolelffs_remove_from_dir(struct inode *dir, struct dentry *dentry)
             break;
 
         for (bi = 0; bi < eblock->extents[ei].ee_len; bi++) {
-            bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+            bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
             if (!bh2) {
                 ret = -EIO;
                 goto release_bh;
@@ -545,7 +545,7 @@ static int lolelffs_unlink(struct inode *dir, struct dentry *dentry)
      * anyway), just put the block and continue.
      */
     bno = LOLELFFS_INODE(inode)->ei_block;
-    bh = sb_bread(sb, bno);
+    bh = LOLELFFS_SB_BREAD(sb, bno);
     if (!bh)
         goto clean_inode;
     file_block = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -562,7 +562,7 @@ static int lolelffs_unlink(struct inode *dir, struct dentry *dentry)
 
         /* Scrub the extent */
         for (bi = 0; bi < file_block->extents[ei].ee_len; bi++) {
-            bh2 = sb_bread(sb, file_block->extents[ei].ee_start + bi);
+            bh2 = LOLELFFS_SB_BREAD(sb, file_block->extents[ei].ee_start + bi);
             if (!bh2)
                 continue;
             block = (char *) bh2->b_data;
@@ -643,7 +643,7 @@ static int lolelffs_rename(struct inode *old_dir,
         return -ENAMETOOLONG;
 
     /* Fail if new_dentry exists or if new_dir is full */
-    bh_new = sb_bread(sb, ci_new->ei_block);
+    bh_new = LOLELFFS_SB_BREAD(sb, ci_new->ei_block);
     if (!bh_new)
         return -EIO;
 
@@ -653,7 +653,7 @@ static int lolelffs_rename(struct inode *old_dir,
             break;
 
         for (bi = 0; new_pos < 0 && bi < eblock_new->extents[ei].ee_len; bi++) {
-            bh2 = sb_bread(sb, eblock_new->extents[ei].ee_start + bi);
+            bh2 = LOLELFFS_SB_BREAD(sb, eblock_new->extents[ei].ee_start + bi);
             if (!bh2) {
                 ret = -EIO;
                 goto release_new;
@@ -707,7 +707,7 @@ static int lolelffs_rename(struct inode *old_dir,
             ei ? eblock_new->extents[ei - 1].ee_block +
                      eblock_new->extents[ei - 1].ee_len
                : 0;
-        bh2 = sb_bread(sb, eblock_new->extents[ei].ee_start + 0);
+        bh2 = LOLELFFS_SB_BREAD(sb, eblock_new->extents[ei].ee_start + 0);
         if (!bh2) {
             ret = -EIO;
             goto put_block;
@@ -798,7 +798,7 @@ static int lolelffs_rmdir(struct inode *dir, struct dentry *dentry)
     /* If the directory is not empty, fail */
     if (inode->i_nlink > 2)
         return -ENOTEMPTY;
-    bh = sb_bread(sb, LOLELFFS_INODE(inode)->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, LOLELFFS_INODE(inode)->ei_block);
     if (!bh)
         return -EIO;
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -825,7 +825,7 @@ static int lolelffs_link(struct dentry *old_dentry,
     int ret = 0, alloc = false, bno = 0;
     int ei = 0, bi = 0, fi = 0;
 
-    bh = sb_bread(sb, ci_dir->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, ci_dir->ei_block);
     if (!bh)
         return -EIO;
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -855,7 +855,7 @@ static int lolelffs_link(struct dentry *old_dentry,
                : 0;
         alloc = true;
     }
-    bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+    bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
     if (!bh2) {
         ret = -EIO;
         goto put_block;
@@ -919,7 +919,7 @@ static int lolelffs_symlink(struct inode *dir,
         return -ENAMETOOLONG;
 
     /* fill directory data block */
-    bh = sb_bread(sb, ci_dir->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, ci_dir->ei_block);
     if (!bh)
         return -EIO;
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -949,7 +949,7 @@ static int lolelffs_symlink(struct inode *dir,
                : 0;
         alloc = true;
     }
-    bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+    bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
     if (!bh2) {
         ret = -EIO;
         goto put_block;

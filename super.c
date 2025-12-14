@@ -6,7 +6,10 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
+#include <linux/loop.h>
+#include <linux/blkdev.h>
 
+#include "elf.h"
 #include "lolelffs.h"
 
 static struct kmem_cache *lolelffs_inode_cache;
@@ -57,7 +60,7 @@ static int lolelffs_write_inode(struct inode *inode,
     if (ino >= sbi->nr_inodes)
         return 0;
 
-    bh = sb_bread(sb, inode_block);
+    bh = LOLELFFS_SB_BREAD(sb, inode_block);
     if (!bh)
         return -EIO;
 
@@ -101,7 +104,7 @@ static int lolelffs_sync_fs(struct super_block *sb, int wait)
     int i;
 
     /* Flush superblock */
-    struct buffer_head *bh = sb_bread(sb, 0);
+    struct buffer_head *bh = LOLELFFS_SB_BREAD(sb, 0);
     if (!bh)
         return -EIO;
 
@@ -124,7 +127,7 @@ static int lolelffs_sync_fs(struct super_block *sb, int wait)
     for (i = 0; i < sbi->nr_ifree_blocks; i++) {
         int idx = sbi->nr_istore_blocks + i + 1;
 
-        bh = sb_bread(sb, idx);
+        bh = LOLELFFS_SB_BREAD(sb, idx);
         if (!bh)
             return -EIO;
 
@@ -141,7 +144,7 @@ static int lolelffs_sync_fs(struct super_block *sb, int wait)
     for (i = 0; i < sbi->nr_bfree_blocks; i++) {
         int idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
 
-        bh = sb_bread(sb, idx);
+        bh = LOLELFFS_SB_BREAD(sb, idx);
         if (!bh)
             return -EIO;
 
@@ -190,6 +193,7 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     struct lolelffs_sb_info *csb = NULL;
     struct lolelffs_sb_info *sbi = NULL;
     struct inode *root_inode = NULL;
+    loff_t fs_offset = 0;
     int ret = 0, i;
 
     /* Init sb */
@@ -198,8 +202,33 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     sb->s_maxbytes = LOLELFFS_MAX_FILESIZE;
     sb->s_op = &lolelffs_super_ops;
 
-    /* Read sb from disk */
-    bh = sb_bread(sb, LOLELFFS_SB_BLOCK_NR);
+    /* Try to detect ELF file and find .lolfs.super section */
+    /* Use bdev_file_open_by_dev to access the underlying file for loop devices */
+    if (sb->s_bdev) {
+        struct file *bdev_file;
+        dev_t dev = sb->s_bdev->bd_dev;
+
+        bdev_file = bdev_file_open_by_dev(dev, BLK_OPEN_READ, NULL, NULL);
+        if (!IS_ERR(bdev_file)) {
+            /* Try to read ELF headers from the file */
+            fs_offset = find_lolelffs_section(bdev_file);
+            fput(bdev_file);
+
+            if (fs_offset > 0) {
+                pr_info("Detected ELF binary, filesystem at offset 0x%llx\n", fs_offset);
+            } else {
+                pr_info("Using raw filesystem (offset 0)\n");
+            }
+        } else {
+            pr_info("Using raw filesystem (offset 0)\n");
+        }
+    } else {
+        pr_info("Using raw filesystem (offset 0)\n");
+    }
+
+    /* Temporarily store offset before sbi is created */
+    /* Read sb from disk - use direct sb_bread here since sbi doesn't exist yet */
+    bh = sb_bread(sb, LOLELFFS_SB_BLOCK_NR + (fs_offset / LOLELFFS_BLOCK_SIZE));
     if (!bh)
         return -EIO;
 
@@ -226,6 +255,7 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     sbi->nr_bfree_blocks = csb->nr_bfree_blocks;
     sbi->nr_free_inodes = csb->nr_free_inodes;
     sbi->nr_free_blocks = csb->nr_free_blocks;
+    sbi->fs_offset = fs_offset / LOLELFFS_BLOCK_SIZE; /* Store as block offset */
     sb->s_fs_info = sbi;
 
     /* Initialize mutex for bitmap operations */
@@ -244,7 +274,7 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     for (i = 0; i < sbi->nr_ifree_blocks; i++) {
         int idx = sbi->nr_istore_blocks + i + 1;
 
-        bh = sb_bread(sb, idx);
+        bh = LOLELFFS_SB_BREAD(sb, idx);
         if (!bh) {
             ret = -EIO;
             goto free_ifree;
@@ -267,7 +297,7 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     for (i = 0; i < sbi->nr_bfree_blocks; i++) {
         int idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
 
-        bh = sb_bread(sb, idx);
+        bh = LOLELFFS_SB_BREAD(sb, idx);
         if (!bh) {
             ret = -EIO;
             goto free_bfree;

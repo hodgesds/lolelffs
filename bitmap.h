@@ -78,6 +78,7 @@ static inline uint32_t get_free_bits_from_hint(unsigned long *freemap,
     }
 
     /* Search from hint to end */
+    bit = start;
     for_each_set_bit_from(bit, freemap, size) {
         if (bit < start) {
             bit = start - 1;

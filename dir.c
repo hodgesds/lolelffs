@@ -40,7 +40,7 @@ static int lolelffs_iterate(struct file *dir, struct dir_context *ctx)
         return 0;
 
     /* Read the directory index block on disk */
-    bh = sb_bread(sb, ci->ei_block);
+    bh = LOLELFFS_SB_BREAD(sb, ci->ei_block);
     if (!bh)
         return -EIO;
     eblock = (struct lolelffs_file_ei_block *) bh->b_data;
@@ -57,7 +57,7 @@ static int lolelffs_iterate(struct file *dir, struct dir_context *ctx)
         }
         /* Iterate over blocks in one extent */
         for (; bi < eblock->extents[ei].ee_len; bi++) {
-            bh2 = sb_bread(sb, eblock->extents[ei].ee_start + bi);
+            bh2 = LOLELFFS_SB_BREAD(sb, eblock->extents[ei].ee_start + bi);
             if (!bh2) {
                 ret = -EIO;
                 goto release_bh;

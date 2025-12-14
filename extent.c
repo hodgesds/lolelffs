@@ -28,7 +28,7 @@ static inline uint32_t lolelffs_count_extents(struct lolelffs_file_ei_block *ind
  * - Extent lengths are within bounds
  * - No overlapping extents
  */
-int lolelffs_validate_extents(struct lolelffs_file_ei_block *index)
+static int __maybe_unused lolelffs_validate_extents(struct lolelffs_file_ei_block *index)
 {
     uint32_t i, nr_extents;
     uint32_t expected_block = 0;
@@ -59,7 +59,7 @@ int lolelffs_validate_extents(struct lolelffs_file_ei_block *index)
 /*
  * Calculate total blocks used by all extents.
  */
-uint32_t lolelffs_extents_total_blocks(struct lolelffs_file_ei_block *index)
+static uint32_t __maybe_unused lolelffs_extents_total_blocks(struct lolelffs_file_ei_block *index)
 {
     uint32_t i, total = 0;
 
@@ -129,9 +129,9 @@ uint32_t lolelffs_ext_search(struct lolelffs_file_ei_block *index,
  * falling back to binary search. This is useful for sequential access
  * patterns where the next block is likely in the same or adjacent extent.
  */
-uint32_t lolelffs_ext_search_with_hint(struct lolelffs_file_ei_block *index,
-                                       uint32_t iblock,
-                                       uint32_t hint)
+static uint32_t __maybe_unused lolelffs_ext_search_with_hint(struct lolelffs_file_ei_block *index,
+                                                              uint32_t iblock,
+                                                              uint32_t hint)
 {
     uint32_t nr_extents;
 

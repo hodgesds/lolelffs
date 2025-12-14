@@ -36,7 +36,7 @@ static int lolelffs_init_fs_context(struct fs_context *fc)
 }
 
 /* Unmount a lolelffs partition */
-void lolelffs_kill_sb(struct super_block *sb)
+static void lolelffs_kill_sb(struct super_block *sb)
 {
     kill_block_super(sb);
 

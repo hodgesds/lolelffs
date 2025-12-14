@@ -33,7 +33,7 @@ static int lolelffs_file_get_block(struct inode *inode,
         return -EFBIG;
 
     /* Read directory block from disk */
-    bh_index = sb_bread(sb, ci->ei_block);
+    bh_index = LOLELFFS_SB_BREAD(sb, ci->ei_block);
     if (!bh_index)
         return -EIO;
     index = (struct lolelffs_file_ei_block *) bh_index->b_data;
@@ -71,8 +71,8 @@ static int lolelffs_file_get_block(struct inode *inode,
               index->extents[extent].ee_block;
     }
 
-    /* Map the physical block to to the given buffer_head */
-    map_bh(bh_result, sb, bno);
+    /* Map the physical block to to the given buffer_head (adjust for ELF offset) */
+    map_bh(bh_result, sb, bno + ((struct lolelffs_sb_info *)sb->s_fs_info)->fs_offset);
 
 brelse_index:
     brelse(bh_index);
@@ -134,7 +134,7 @@ static int lolelffs_write_begin(const struct kiocb *iocb,
         return -ENOSPC;
 
     /* Count extents before write to track new allocations */
-    bh_index = sb_bread(sb, ci->ei_block);
+    bh_index = LOLELFFS_SB_BREAD(sb, ci->ei_block);
     if (!bh_index)
         return -EIO;
     index = (struct lolelffs_file_ei_block *) bh_index->b_data;
@@ -151,7 +151,7 @@ static int lolelffs_write_begin(const struct kiocb *iocb,
 
     /* if this failed, reclaim newly allocated blocks */
     if (err < 0) {
-        bh_index = sb_bread(sb, ci->ei_block);
+        bh_index = LOLELFFS_SB_BREAD(sb, ci->ei_block);
         if (bh_index) {
             index = (struct lolelffs_file_ei_block *) bh_index->b_data;
             /* Free any extents allocated during the failed write */
@@ -216,7 +216,7 @@ static int lolelffs_write_end(const struct kiocb *iocb,
         truncate_pagecache(inode, inode->i_size);
 
         /* Read ei_block to remove unused blocks */
-        bh_index = sb_bread(sb, ci->ei_block);
+        bh_index = LOLELFFS_SB_BREAD(sb, ci->ei_block);
         if (!bh_index) {
             pr_err("failed truncating file. we just lost %llu blocks\n",
                    nr_blocks_old - inode->i_blocks);

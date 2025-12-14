@@ -95,10 +95,15 @@ struct lolelffs_sb_info {
     unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
     unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
     struct mutex lock; /* Protects bitmap and free counters */
+    loff_t fs_offset; /* Offset to filesystem data (0 for raw, or ELF section offset) */
 #endif
 };
 
 #ifdef __KERNEL__
+
+/* Helper macro to read blocks with ELF offset adjustment */
+#define LOLELFFS_SB_BREAD(sb, block) \
+    sb_bread((sb), (block) + ((struct lolelffs_sb_info *)(sb)->s_fs_info)->fs_offset)
 
 struct lolelffs_inode_info {
     uint32_t ei_block;  /* Block with list of extents for this file */
