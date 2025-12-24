@@ -1,0 +1,15 @@
+[package]
+name = "lolelffs-fuse"
+version = "0.1.0"
+edition = "2021"
+description = "FUSE driver for lolelffs filesystems"
+authors = ["lolelffs contributors"]
+
+[dependencies]
+lolelffs-tools = { path = ".." }
+fuser = "0.14"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+libc = "0.2"
