@@ -160,6 +160,10 @@ static struct dentry *lolelffs_lookup(struct inode *dir,
 search_end:
     brelse(bh);
 
+    /* Check if inode lookup failed */
+    if (IS_ERR(inode))
+        return ERR_CAST(inode);
+
     /* Update directory access time */
     {
         struct timespec64 now = current_time(dir);
