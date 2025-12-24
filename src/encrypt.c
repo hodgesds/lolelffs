@@ -10,10 +10,10 @@
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/random.h>
+#include <linux/scatterlist.h>
 #include <crypto/skcipher.h>
 #include <crypto/aead.h>
 #include <crypto/hash.h>
-#include <crypto/internal/cipher.h>
 #include "lolelffs.h"
 #include "encrypt.h"
 
@@ -454,33 +454,69 @@ out_free_tfm:
 int lolelffs_decrypt_master_key(const u8 *encrypted_key, const u8 *user_key,
 				 u8 *master_key_out)
 {
-	struct crypto_cipher *tfm;
+	struct crypto_skcipher *tfm;
+	struct skcipher_request *req;
+	struct scatterlist sg;
+	DECLARE_CRYPTO_WAIT(wait);
+	u8 *buffer;
 	int ret;
 
 	/* Allocate AES cipher for ECB mode */
-	tfm = crypto_alloc_cipher("aes", 0, 0);
+	tfm = crypto_alloc_skcipher("ecb(aes)", 0, 0);
 	if (IS_ERR(tfm)) {
 		pr_err("lolelffs: failed to allocate AES cipher: %ld\n", PTR_ERR(tfm));
 		return PTR_ERR(tfm);
 	}
 
 	/* Set the user key (32 bytes = 256 bits) */
-	ret = crypto_cipher_setkey(tfm, user_key, 32);
+	ret = crypto_skcipher_setkey(tfm, user_key, 32);
 	if (ret < 0) {
 		pr_err("lolelffs: failed to set AES key: %d\n", ret);
-		goto out_free;
+		goto out_free_tfm;
 	}
 
-	/* Decrypt first 16 bytes */
-	crypto_cipher_decrypt_one(tfm, master_key_out, encrypted_key);
+	/* Allocate request structure */
+	req = skcipher_request_alloc(tfm, GFP_KERNEL);
+	if (!req) {
+		ret = -ENOMEM;
+		goto out_free_tfm;
+	}
 
-	/* Decrypt second 16 bytes */
-	crypto_cipher_decrypt_one(tfm, master_key_out + 16, encrypted_key + 16);
+	/* Allocate buffer for in-place decryption (skcipher needs non-const) */
+	buffer = kmalloc(32, GFP_KERNEL);
+	if (!buffer) {
+		ret = -ENOMEM;
+		goto out_free_req;
+	}
 
+	/* Copy encrypted key to buffer */
+	memcpy(buffer, encrypted_key, 32);
+
+	/* Setup scatter-gather list for in-place decryption */
+	sg_init_one(&sg, buffer, 32);
+
+	/* Setup the request */
+	skcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG | CRYPTO_TFM_REQ_MAY_SLEEP,
+				       crypto_req_done, &wait);
+	skcipher_request_set_crypt(req, &sg, &sg, 32, NULL);
+
+	/* Perform decryption */
+	ret = crypto_wait_req(crypto_skcipher_decrypt(req), &wait);
+	if (ret < 0) {
+		pr_err("lolelffs: master key decryption failed: %d\n", ret);
+		goto out_free_buffer;
+	}
+
+	/* Copy decrypted key to output */
+	memcpy(master_key_out, buffer, 32);
 	ret = 0;
 
-out_free:
-	crypto_free_cipher(tfm);
+out_free_buffer:
+	kfree_sensitive(buffer);
+out_free_req:
+	skcipher_request_free(req);
+out_free_tfm:
+	crypto_free_skcipher(tfm);
 	return ret;
 }
 

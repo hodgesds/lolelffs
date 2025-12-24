@@ -16,22 +16,6 @@ static const char *xattr_prefixes[] = {
     [LOLELFFS_XATTR_INDEX_SECURITY] = XATTR_SECURITY_PREFIX,
 };
 
-/* Get namespace index from name */
-static int lolelffs_xattr_get_index(const char *name)
-{
-    int i;
-
-    for (i = 0; i < ARRAY_SIZE(xattr_prefixes); i++) {
-        const char *prefix = xattr_prefixes[i];
-        size_t prefix_len = strlen(prefix);
-
-        if (strncmp(name, prefix, prefix_len) == 0)
-            return i;
-    }
-
-    return -EOPNOTSUPP;
-}
-
 /* Read xattr data from extent blocks */
 static int lolelffs_xattr_read_data(struct super_block *sb,
                                     struct lolelffs_xattr_ei_block *ei,
