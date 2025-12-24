@@ -1,5 +1,6 @@
 //! File operations for lolelffs
 
+use crate::compress;
 use crate::fs::LolelfFs;
 use crate::types::*;
 use anyhow::{bail, Result};
@@ -36,7 +37,35 @@ impl LolelfFs {
         for logical_block in 0..num_blocks {
             if let Some(extent) = ei.find_extent(logical_block) {
                 if let Some(phys_block) = extent.get_physical(logical_block) {
-                    let block = self.read_block(phys_block)?;
+                    let raw_block = self.read_block(phys_block)?;
+
+                    // Step 1: Decrypt if needed (decrypt-then-decompress pipeline)
+                    let decrypted_block = if extent.ee_enc_algo != LOLELFFS_ENC_NONE {
+                        // Check if filesystem is unlocked
+                        if !self.enc_unlocked {
+                            bail!("Cannot read encrypted block: filesystem is locked");
+                        }
+
+                        crate::encrypt::decrypt_block(
+                            extent.ee_enc_algo,
+                            &self.enc_master_key,
+                            logical_block as u64,
+                            &raw_block,
+                        )?
+                    } else {
+                        raw_block
+                    };
+
+                    // Step 2: Decompress if needed
+                    let block = if extent.ee_comp_algo != LOLELFFS_COMP_NONE as u16 {
+                        compress::decompress_block(
+                            extent.ee_comp_algo as u8,
+                            &decrypted_block,
+                            LOLELFFS_BLOCK_SIZE as usize,
+                        )?
+                    } else {
+                        decrypted_block
+                    };
 
                     // Calculate how much data to read from this block
                     let block_start = logical_block * LOLELFFS_BLOCK_SIZE;
@@ -125,6 +154,12 @@ impl LolelfFs {
                 ee_block: logical_block,
                 ee_len: extent_size,
                 ee_start: start_block,
+                ee_comp_algo: LOLELFFS_COMP_NONE as u16,
+                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_reserved: 0,
+                ee_flags: 0,
+                ee_reserved2: 0,
+                ee_meta: 0,
             });
 
             logical_block += extent_size;
@@ -143,18 +178,99 @@ impl LolelfFs {
         };
         self.write_extent_index(inode.ei_block, &ei)?;
 
-        // Write data to blocks
+        // Write data to blocks with optional compression and encryption
+        let comp_algo = self.superblock.comp_default_algo as u8;
+        let comp_enabled = self.superblock.comp_enabled != 0;
+        let enc_algo = self.superblock.enc_default_algo as u8;
+        let enc_enabled = self.superblock.enc_enabled != 0;
+        let mut updated_extents = ei.extents.clone();
+
         for (idx, chunk) in data.chunks(LOLELFFS_BLOCK_SIZE as usize).enumerate() {
             let logical_block = idx as u32;
 
-            if let Some(extent) = ei.find_extent(logical_block) {
+            if let Some((extent_idx, extent)) = ei.extents.iter().enumerate().find(|(_i, e)| {
+                logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len && !e.is_empty()
+            }) {
                 if let Some(phys_block) = extent.get_physical(logical_block) {
+                    // Prepare block data (pad to full block size)
                     let mut block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
                     block[..chunk.len()].copy_from_slice(chunk);
-                    self.write_block(phys_block, &block)?;
+
+                    // Step 1: Compress if enabled
+                    let (work_buf, used_comp_algo) = if comp_enabled
+                        && comp_algo != LOLELFFS_COMP_NONE
+                        && chunk.len() == LOLELFFS_BLOCK_SIZE as usize
+                    {
+                        match crate::compress::compress_block(comp_algo, &block) {
+                            Ok(Some(compressed)) => {
+                                // Compression succeeded and saved space
+                                let mut comp_block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
+                                comp_block[..compressed.len()].copy_from_slice(&compressed);
+                                (comp_block, comp_algo)
+                            }
+                            _ => {
+                                // Compression failed or didn't save space
+                                (block.clone(), LOLELFFS_COMP_NONE)
+                            }
+                        }
+                    } else {
+                        (block.clone(), LOLELFFS_COMP_NONE)
+                    };
+
+                    // Step 2: Encrypt if enabled (compress-then-encrypt)
+                    let (final_block, used_enc_algo) = if enc_enabled && enc_algo != LOLELFFS_ENC_NONE {
+                        // Check if filesystem is unlocked
+                        if !self.enc_unlocked {
+                            bail!("Cannot write encrypted data: filesystem is locked");
+                        }
+
+                        match crate::encrypt::encrypt_block(
+                            enc_algo,
+                            &self.enc_master_key,
+                            logical_block as u64,
+                            &work_buf,
+                        ) {
+                            Ok(encrypted) => {
+                                // For AES-XTS, encrypted size == block size
+                                // For ChaCha20-Poly1305, add 16-byte tag
+                                let mut enc_block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
+                                let copy_len = encrypted.len().min(LOLELFFS_BLOCK_SIZE as usize);
+                                enc_block[..copy_len].copy_from_slice(&encrypted[..copy_len]);
+                                (enc_block, enc_algo)
+                            }
+                            Err(e) => {
+                                bail!("Encryption failed: {}", e);
+                            }
+                        }
+                    } else {
+                        (work_buf, LOLELFFS_ENC_NONE)
+                    };
+
+                    self.write_block(phys_block, &final_block)?;
+
+                    // Update extent metadata
+                    updated_extents[extent_idx].ee_comp_algo = used_comp_algo as u16;
+                    updated_extents[extent_idx].ee_enc_algo = used_enc_algo;
+
+                    // Set flags
+                    let mut flags = 0u16;
+                    if used_comp_algo != LOLELFFS_COMP_NONE {
+                        flags |= LOLELFFS_EXT_COMPRESSED;
+                    }
+                    if used_enc_algo != LOLELFFS_ENC_NONE {
+                        flags |= LOLELFFS_EXT_ENCRYPTED;
+                    }
+                    updated_extents[extent_idx].ee_flags = flags;
                 }
             }
         }
+
+        // Rewrite extent index with updated compression info
+        let updated_ei = ExtentIndex {
+            nr_files: 0,
+            extents: updated_extents,
+        };
+        self.write_extent_index(inode.ei_block, &updated_ei)?;
 
         // Update inode
         inode.i_size = data.len() as u32;
@@ -195,7 +311,8 @@ impl LolelfFs {
             i_blocks: 0,
             i_nlink: 1,
             ei_block,
-            i_data: [0u8; 32],
+            xattr_block: 0, // No xattrs initially
+            i_data: [0u8; 28],
         };
         self.write_inode(new_inode_num, &new_inode)?;
 
@@ -253,6 +370,9 @@ impl LolelfFs {
                 self.free_blocks(file_inode.ei_block, 1)?;
             }
 
+            // Free xattr blocks
+            self.free_inode_xattrs(file_inode_num)?;
+
             // Free the inode
             self.free_inode(file_inode_num)?;
         } else {
@@ -265,8 +385,8 @@ impl LolelfFs {
 
     /// Create a symbolic link
     pub fn symlink(&mut self, parent_inode_num: u32, name: &str, target: &str) -> Result<u32> {
-        if target.len() > 31 {
-            bail!("Symlink target too long (max 31 bytes)");
+        if target.len() > 27 {
+            bail!("Symlink target too long (max 27 bytes)");
         }
 
         // Allocate new inode
@@ -278,7 +398,7 @@ impl LolelfFs {
             .unwrap()
             .as_secs() as u32;
 
-        let mut i_data = [0u8; 32];
+        let mut i_data = [0u8; 28];
         i_data[..target.len()].copy_from_slice(target.as_bytes());
 
         let new_inode = Inode {
@@ -292,6 +412,7 @@ impl LolelfFs {
             i_blocks: 0,
             i_nlink: 1,
             ei_block: 0, // Symlinks don't need extent index
+            xattr_block: 0, // No xattrs initially
             i_data,
         };
         self.write_inode(new_inode_num, &new_inode)?;

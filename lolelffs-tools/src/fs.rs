@@ -11,6 +11,8 @@ use std::path::Path;
 pub struct LolelfFs {
     file: File,
     pub superblock: Superblock,
+    pub enc_unlocked: bool,
+    pub enc_master_key: [u8; 32],
 }
 
 impl LolelfFs {
@@ -32,7 +34,20 @@ impl LolelfFs {
             );
         }
 
-        Ok(LolelfFs { file, superblock })
+        if superblock.version != LOLELFFS_VERSION {
+            bail!(
+                "Unsupported filesystem version: expected {}, got {}",
+                LOLELFFS_VERSION,
+                superblock.version
+            );
+        }
+
+        Ok(LolelfFs {
+            file,
+            superblock,
+            enc_unlocked: false,
+            enc_master_key: [0; 32],
+        })
     }
 
     /// Open filesystem in read-only mode
@@ -50,7 +65,20 @@ impl LolelfFs {
             );
         }
 
-        Ok(LolelfFs { file, superblock })
+        if superblock.version != LOLELFFS_VERSION {
+            bail!(
+                "Unsupported filesystem version: expected {}, got {}",
+                LOLELFFS_VERSION,
+                superblock.version
+            );
+        }
+
+        Ok(LolelfFs {
+            file,
+            superblock,
+            enc_unlocked: false,
+            enc_master_key: [0; 32],
+        })
     }
 
     /// Read superblock from file
@@ -65,6 +93,27 @@ impl LolelfFs {
         let nr_bfree_blocks = file.read_u32::<LittleEndian>()?;
         let nr_free_inodes = file.read_u32::<LittleEndian>()?;
         let nr_free_blocks = file.read_u32::<LittleEndian>()?;
+        let version = file.read_u32::<LittleEndian>()?;
+        let comp_default_algo = file.read_u32::<LittleEndian>()?;
+        let comp_enabled = file.read_u32::<LittleEndian>()?;
+        let comp_min_block_size = file.read_u32::<LittleEndian>()?;
+        let comp_features = file.read_u32::<LittleEndian>()?;
+        let max_extent_blocks = file.read_u32::<LittleEndian>()?;
+        let enc_enabled = file.read_u32::<LittleEndian>()?;
+        let enc_default_algo = file.read_u32::<LittleEndian>()?;
+        let enc_kdf_algo = file.read_u32::<LittleEndian>()?;
+        let enc_kdf_iterations = file.read_u32::<LittleEndian>()?;
+        let enc_kdf_memory = file.read_u32::<LittleEndian>()?;
+        let enc_kdf_parallelism = file.read_u32::<LittleEndian>()?;
+        let mut enc_salt = [0u8; 32];
+        file.read_exact(&mut enc_salt)?;
+        let mut enc_master_key = [0u8; 32];
+        file.read_exact(&mut enc_master_key)?;
+        let enc_features = file.read_u32::<LittleEndian>()?;
+        let mut reserved = [0u32; 3];
+        for i in 0..3 {
+            reserved[i] = file.read_u32::<LittleEndian>()?;
+        }
 
         Ok(Superblock {
             magic,
@@ -75,6 +124,22 @@ impl LolelfFs {
             nr_bfree_blocks,
             nr_free_inodes,
             nr_free_blocks,
+            version,
+            comp_default_algo,
+            comp_enabled,
+            comp_min_block_size,
+            comp_features,
+            max_extent_blocks,
+            enc_enabled,
+            enc_default_algo,
+            enc_kdf_algo,
+            enc_kdf_iterations,
+            enc_kdf_memory,
+            enc_kdf_parallelism,
+            enc_salt,
+            enc_master_key,
+            enc_features,
+            reserved,
         })
     }
 
@@ -97,6 +162,37 @@ impl LolelfFs {
             .write_u32::<LittleEndian>(self.superblock.nr_free_inodes)?;
         self.file
             .write_u32::<LittleEndian>(self.superblock.nr_free_blocks)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.version)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.comp_default_algo)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.comp_enabled)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.comp_min_block_size)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.comp_features)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.max_extent_blocks)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_enabled)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_default_algo)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_kdf_algo)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_kdf_iterations)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_kdf_memory)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_kdf_parallelism)?;
+        self.file.write_all(&self.superblock.enc_salt)?;
+        self.file.write_all(&self.superblock.enc_master_key)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.enc_features)?;
+        for &r in &self.superblock.reserved {
+            self.file.write_u32::<LittleEndian>(r)?;
+        }
 
         self.file.flush()?;
         Ok(())
@@ -164,8 +260,9 @@ impl LolelfFs {
         let i_blocks = cursor.read_u32::<LittleEndian>()?;
         let i_nlink = cursor.read_u32::<LittleEndian>()?;
         let ei_block = cursor.read_u32::<LittleEndian>()?;
+        let xattr_block = cursor.read_u32::<LittleEndian>()?;
 
-        let mut i_data = [0u8; 32];
+        let mut i_data = [0u8; 28];
         cursor.read_exact(&mut i_data)?;
 
         Ok(Inode {
@@ -179,6 +276,7 @@ impl LolelfFs {
             i_blocks,
             i_nlink,
             ei_block,
+            xattr_block,
             i_data,
         })
     }
@@ -220,6 +318,7 @@ impl LolelfFs {
         data.write_u32::<LittleEndian>(inode.i_blocks).unwrap();
         data.write_u32::<LittleEndian>(inode.i_nlink).unwrap();
         data.write_u32::<LittleEndian>(inode.ei_block).unwrap();
+        data.write_u32::<LittleEndian>(inode.xattr_block).unwrap();
         data.extend_from_slice(&inode.i_data);
         data
     }
@@ -251,7 +350,18 @@ impl LolelfFs {
     }
 
     /// Create a new filesystem on an image file
+    /// Create a new filesystem (without encryption)
     pub fn create<P: AsRef<Path>>(path: P, size: u64) -> Result<Self> {
+        Self::create_with_encryption(path, size, None)
+    }
+
+    /// Create a new filesystem with optional encryption
+    /// enc_config: Option<(password: String, algo: u8, iterations: u32)>
+    pub fn create_with_encryption<P: AsRef<Path>>(
+        path: P,
+        size: u64,
+        enc_config: Option<(String, u8, u32)>,
+    ) -> Result<Self> {
         let path = path.as_ref();
 
         // Create the file with the specified size
@@ -278,6 +388,28 @@ impl LolelfFs {
         let nr_ifree_blocks = (nr_inodes + LOLELFFS_BITS_PER_BLOCK - 1) / LOLELFFS_BITS_PER_BLOCK;
         let nr_bfree_blocks = (nr_blocks + LOLELFFS_BITS_PER_BLOCK - 1) / LOLELFFS_BITS_PER_BLOCK;
 
+        // Handle encryption configuration
+        let (enc_enabled, enc_algo, enc_kdf_algo, enc_kdf_iterations, enc_salt, enc_master_key, master_key_plain) =
+            if let Some((password, algo, iterations)) = enc_config {
+                // Generate random salt and master key
+                let salt = crate::encrypt::generate_salt();
+                let master_key = crate::encrypt::generate_master_key();
+
+                // Derive user key from password
+                let user_key = crate::encrypt::derive_key_pbkdf2(
+                    password.as_bytes(),
+                    &salt,
+                    iterations,
+                );
+
+                // Encrypt master key
+                let encrypted_master_key = crate::encrypt::encrypt_master_key(&master_key, &user_key)?;
+
+                (1, algo as u32, LOLELFFS_KDF_PBKDF2 as u32, iterations, salt, encrypted_master_key, master_key)
+            } else {
+                (0, LOLELFFS_ENC_NONE as u32, LOLELFFS_KDF_ARGON2ID as u32, 3, [0; 32], [0; 32], [0; 32])
+            };
+
         // Create superblock
         let superblock = Superblock {
             magic: LOLELFFS_MAGIC,
@@ -288,9 +420,30 @@ impl LolelfFs {
             nr_bfree_blocks,
             nr_free_inodes: nr_inodes - 1, // Root inode is used
             nr_free_blocks: 0,             // Will be calculated
+            version: LOLELFFS_VERSION,
+            comp_default_algo: LOLELFFS_COMP_LZ4 as u32,
+            comp_enabled: 1,  // Compression enabled by default
+            comp_min_block_size: 128,
+            comp_features: 0,
+            max_extent_blocks: LOLELFFS_MAX_BLOCKS_PER_EXTENT as u32,
+            enc_enabled,
+            enc_default_algo: enc_algo,
+            enc_kdf_algo,
+            enc_kdf_iterations,
+            enc_kdf_memory: 65536,  // Not used for PBKDF2
+            enc_kdf_parallelism: 4,  // Not used for PBKDF2
+            enc_salt,
+            enc_master_key,
+            enc_features: 0,
+            reserved: [0; 3],
         };
 
-        let mut fs = LolelfFs { file, superblock };
+        let mut fs = LolelfFs {
+            file,
+            superblock,
+            enc_unlocked: enc_enabled != 0,  // If encrypted, start unlocked
+            enc_master_key: master_key_plain,
+        };
 
         // Initialize the filesystem
         fs.init_filesystem()?;
@@ -369,7 +522,8 @@ impl LolelfFs {
             i_blocks: 0,
             i_nlink: 2, // . and itself
             ei_block: data_start,
-            i_data: [0u8; 32],
+            xattr_block: 0, // No xattrs on root initially
+            i_data: [0u8; 28],
         };
         self.write_inode(LOLELFFS_ROOT_INO, &root_inode)?;
 
@@ -383,6 +537,308 @@ impl LolelfFs {
         Ok(())
     }
 
+    /// Get an extended attribute value
+    pub fn get_xattr(&mut self, inode_num: u32, name: &str) -> Result<Vec<u8>> {
+        let inode = self.read_inode(inode_num)?;
+
+        if inode.xattr_block == 0 {
+            bail!("No extended attributes set on inode {}", inode_num);
+        }
+
+        let (namespace, base_name) = crate::xattr::parse_xattr_name(name)?;
+        let index = crate::xattr::read_xattr_index(self, inode.xattr_block)?;
+        let data = crate::xattr::read_xattr_data(self, &index)?;
+        let entries = crate::xattr::parse_xattr_entries(&data)?;
+
+        for entry in entries {
+            if entry.name_index == namespace && entry.name == base_name {
+                return Ok(entry.value);
+            }
+        }
+
+        bail!("Extended attribute '{}' not found", name);
+    }
+
+    /// Set an extended attribute
+    pub fn set_xattr(&mut self, inode_num: u32, name: &str, value: &[u8]) -> Result<()> {
+        let mut inode = self.read_inode(inode_num)?;
+        let (namespace, base_name) = crate::xattr::parse_xattr_name(name)?;
+
+        // Read existing entries if any
+        let mut entries = if inode.xattr_block != 0 {
+            let index = crate::xattr::read_xattr_index(self, inode.xattr_block)?;
+            let data = crate::xattr::read_xattr_data(self, &index)?;
+
+            // Free old xattr data blocks
+            for extent in &index.extents {
+                if extent.is_empty() {
+                    break;
+                }
+                self.free_blocks(extent.ee_start, extent.ee_len)?;
+            }
+
+            crate::xattr::parse_xattr_entries(&data)?
+        } else {
+            Vec::new()
+        };
+
+        // Update or add the entry
+        let mut found = false;
+        for entry in &mut entries {
+            if entry.name_index == namespace && entry.name == base_name {
+                entry.value = value.to_vec();
+                entry.value_len = value.len() as u16;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            entries.push(XattrEntry {
+                name_len: base_name.len() as u8,
+                name_index: namespace,
+                value_len: value.len() as u16,
+                value_offset: 0,
+                name: base_name,
+                value: value.to_vec(),
+            });
+        }
+
+        // Serialize entries
+        let data = crate::xattr::serialize_xattr_entries(&entries)?;
+
+        // Allocate extent index block if needed
+        if inode.xattr_block == 0 {
+            inode.xattr_block = self.alloc_blocks(1)?;
+        }
+
+        // Calculate number of blocks needed
+        let num_blocks = (data.len() as u32 + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+
+        // Allocate blocks using extents
+        let mut extents = Vec::new();
+        let mut allocated = 0u32;
+
+        while allocated < num_blocks {
+            let remaining = num_blocks - allocated;
+            let extent_size = self
+                .calc_optimal_extent_size(allocated)
+                .min(remaining)
+                .min(LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+
+            let start_block = self.alloc_blocks(extent_size)?;
+
+            extents.push(Extent {
+                ee_block: allocated,
+                ee_len: extent_size,
+                ee_start: start_block,
+                ee_comp_algo: LOLELFFS_COMP_NONE as u16,
+                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_reserved: 0,
+                ee_flags: 0,
+                ee_reserved2: 0,
+                ee_meta: 0,
+            });
+
+            allocated += extent_size;
+        }
+
+        // Pad extents to LOLELFFS_MAX_EXTENTS
+        while extents.len() < LOLELFFS_MAX_EXTENTS {
+            extents.push(Extent::default());
+        }
+
+        // Write xattr index
+        let index = XattrIndex {
+            total_size: data.len() as u32,
+            count: entries.len() as u32,
+            extents,
+        };
+        crate::xattr::write_xattr_index(self, inode.xattr_block, &index)?;
+
+        // Write data to blocks
+        for (idx, chunk) in data.chunks(LOLELFFS_BLOCK_SIZE as usize).enumerate() {
+            let logical_block = idx as u32;
+
+            if let Some(extent) = index.extents.iter().find(|e| {
+                !e.is_empty() && logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len
+            }) {
+                let phys_block = extent.ee_start + (logical_block - extent.ee_block);
+                let mut block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
+                block[..chunk.len()].copy_from_slice(chunk);
+                self.write_block(phys_block, &block)?;
+            }
+        }
+
+        // Update inode
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        inode.i_ctime = now;
+        self.write_inode(inode_num, &inode)?;
+
+        Ok(())
+    }
+
+    /// List all extended attribute names
+    pub fn list_xattrs(&mut self, inode_num: u32) -> Result<Vec<String>> {
+        let inode = self.read_inode(inode_num)?;
+
+        if inode.xattr_block == 0 {
+            return Ok(Vec::new());
+        }
+
+        let index = crate::xattr::read_xattr_index(self, inode.xattr_block)?;
+        let data = crate::xattr::read_xattr_data(self, &index)?;
+        let entries = crate::xattr::parse_xattr_entries(&data)?;
+
+        let names = entries
+            .iter()
+            .map(|e| {
+                let prefix = match e.name_index {
+                    XattrNamespace::User => "user.",
+                    XattrNamespace::Trusted => "trusted.",
+                    XattrNamespace::System => "system.",
+                    XattrNamespace::Security => "security.",
+                };
+                format!("{}{}", prefix, e.name)
+            })
+            .collect();
+
+        Ok(names)
+    }
+
+    /// Remove an extended attribute
+    pub fn remove_xattr(&mut self, inode_num: u32, name: &str) -> Result<()> {
+        let mut inode = self.read_inode(inode_num)?;
+
+        if inode.xattr_block == 0 {
+            bail!("No extended attributes set on inode {}", inode_num);
+        }
+
+        let (namespace, base_name) = crate::xattr::parse_xattr_name(name)?;
+        let index = crate::xattr::read_xattr_index(self, inode.xattr_block)?;
+        let data = crate::xattr::read_xattr_data(self, &index)?;
+        let mut entries = crate::xattr::parse_xattr_entries(&data)?;
+
+        // Find and remove the entry
+        let initial_len = entries.len();
+        entries.retain(|e| !(e.name_index == namespace && e.name == base_name));
+
+        if entries.len() == initial_len {
+            bail!("Extended attribute '{}' not found", name);
+        }
+
+        // Free old xattr data blocks
+        for extent in &index.extents {
+            if extent.is_empty() {
+                break;
+            }
+            self.free_blocks(extent.ee_start, extent.ee_len)?;
+        }
+
+        // If no entries left, free the xattr block
+        if entries.is_empty() {
+            self.free_blocks(inode.xattr_block, 1)?;
+            inode.xattr_block = 0;
+        } else {
+            // Serialize remaining entries and write them back
+            let data = crate::xattr::serialize_xattr_entries(&entries)?;
+            let num_blocks = (data.len() as u32 + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+
+            // Allocate blocks using extents
+            let mut extents = Vec::new();
+            let mut allocated = 0u32;
+
+            while allocated < num_blocks {
+                let remaining = num_blocks - allocated;
+                let extent_size = self
+                    .calc_optimal_extent_size(allocated)
+                    .min(remaining)
+                    .min(LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+
+                let start_block = self.alloc_blocks(extent_size)?;
+
+                extents.push(Extent {
+                    ee_block: allocated,
+                    ee_len: extent_size,
+                    ee_start: start_block,
+                    ee_comp_algo: LOLELFFS_COMP_NONE as u16,
+                    ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                    ee_reserved: 0,
+                    ee_flags: 0,
+                    ee_reserved2: 0,
+                    ee_meta: 0,
+                });
+
+                allocated += extent_size;
+            }
+
+            // Pad extents
+            while extents.len() < LOLELFFS_MAX_EXTENTS {
+                extents.push(Extent::default());
+            }
+
+            // Write xattr index
+            let new_index = XattrIndex {
+                total_size: data.len() as u32,
+                count: entries.len() as u32,
+                extents,
+            };
+            crate::xattr::write_xattr_index(self, inode.xattr_block, &new_index)?;
+
+            // Write data to blocks
+            for (idx, chunk) in data.chunks(LOLELFFS_BLOCK_SIZE as usize).enumerate() {
+                let logical_block = idx as u32;
+
+                if let Some(extent) = new_index.extents.iter().find(|e| {
+                    !e.is_empty() && logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len
+                }) {
+                    let phys_block = extent.ee_start + (logical_block - extent.ee_block);
+                    let mut block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
+                    block[..chunk.len()].copy_from_slice(chunk);
+                    self.write_block(phys_block, &block)?;
+                }
+            }
+        }
+
+        // Update inode
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        inode.i_ctime = now;
+        self.write_inode(inode_num, &inode)?;
+
+        Ok(())
+    }
+
+    /// Free xattr blocks for an inode (called during inode deletion)
+    pub fn free_inode_xattrs(&mut self, inode_num: u32) -> Result<()> {
+        let inode = self.read_inode(inode_num)?;
+
+        if inode.xattr_block == 0 {
+            return Ok(());
+        }
+
+        // Read xattr index
+        let index = crate::xattr::read_xattr_index(self, inode.xattr_block)?;
+
+        // Free all xattr data blocks
+        for extent in &index.extents {
+            if extent.is_empty() {
+                break;
+            }
+            self.free_blocks(extent.ee_start, extent.ee_len)?;
+        }
+
+        // Free xattr index block
+        self.free_blocks(inode.xattr_block, 1)?;
+
+        Ok(())
+    }
+
     /// Get filesystem statistics
     pub fn statfs(&self) -> FsStats {
         FsStats {
@@ -392,6 +848,38 @@ impl LolelfFs {
             free_inodes: self.superblock.nr_free_inodes,
             block_size: LOLELFFS_BLOCK_SIZE,
         }
+    }
+
+    /// Unlock encrypted filesystem with password
+    pub fn unlock(&mut self, password: &str) -> Result<()> {
+        // Check if encryption is enabled
+        if self.superblock.enc_enabled == 0 {
+            bail!("Filesystem is not encrypted");
+        }
+
+        // Check if already unlocked
+        if self.enc_unlocked {
+            return Ok(());
+        }
+
+        // Derive user key from password using the same parameters as creation
+        let user_key = crate::encrypt::derive_key_pbkdf2(
+            password.as_bytes(),
+            &self.superblock.enc_salt,
+            self.superblock.enc_kdf_iterations,
+        );
+
+        // Decrypt master key
+        let master_key = crate::encrypt::decrypt_master_key(
+            &self.superblock.enc_master_key,
+            &user_key,
+        )?;
+
+        // Store the decrypted master key
+        self.enc_master_key = master_key;
+        self.enc_unlocked = true;
+
+        Ok(())
     }
 }
 

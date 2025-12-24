@@ -100,6 +100,84 @@ static int check_superblock(void)
     }
     INFO("Inode count: %u", nr_inodes);
 
+    /* Check filesystem version and compression settings */
+    uint32_t version = le32toh(sb.version);
+    INFO("Filesystem version: %u", version);
+
+    if (version != LOLELFFS_VERSION) {
+        ERROR("Unsupported filesystem version: %u (expected: %u)",
+              version, LOLELFFS_VERSION);
+        return -1;
+    }
+
+    uint32_t comp_algo = le32toh(sb.comp_default_algo);
+    uint32_t comp_enabled = le32toh(sb.comp_enabled);
+    uint32_t max_extent_blocks = le32toh(sb.max_extent_blocks);
+
+    /* Validate compression algorithm */
+    if (comp_algo > LOLELFFS_COMP_ZSTD) {
+        ERROR("Invalid compression algorithm: %u", comp_algo);
+        return -1;
+    }
+
+    /* Validate max extent blocks */
+    if (max_extent_blocks != LOLELFFS_MAX_BLOCKS_PER_EXTENT) {
+        WARN("Unexpected max_extent_blocks: %u (expected %u)",
+             max_extent_blocks, LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+    }
+
+    INFO("Compression: %s (algorithm: %u)", comp_enabled ? "enabled" : "disabled", comp_algo);
+    INFO("Max extent blocks: %u", max_extent_blocks);
+
+    /* Check encryption settings */
+    uint32_t enc_enabled = le32toh(sb.enc_enabled);
+    uint32_t enc_algo = le32toh(sb.enc_default_algo);
+    uint32_t enc_kdf_algo = le32toh(sb.enc_kdf_algo);
+    uint32_t enc_kdf_iterations = le32toh(sb.enc_kdf_iterations);
+    uint32_t enc_kdf_memory = le32toh(sb.enc_kdf_memory);
+    uint32_t enc_kdf_parallelism = le32toh(sb.enc_kdf_parallelism);
+
+    /* Validate encryption algorithm */
+    if (enc_algo > LOLELFFS_ENC_CHACHA20_POLY) {
+        ERROR("Invalid encryption algorithm: %u", enc_algo);
+        return -1;
+    }
+
+    /* Validate KDF algorithm */
+    if (enc_kdf_algo > LOLELFFS_KDF_PBKDF2) {
+        ERROR("Invalid KDF algorithm: %u", enc_kdf_algo);
+        return -1;
+    }
+
+    /* Validate KDF parameters */
+    if (enc_kdf_algo != LOLELFFS_KDF_NONE) {
+        if (enc_kdf_iterations == 0) {
+            WARN("KDF iterations is 0 (insecure)");
+        }
+        if (enc_kdf_iterations > 1000000) {
+            WARN("KDF iterations %u seems excessive", enc_kdf_iterations);
+        }
+
+        if (enc_kdf_algo == LOLELFFS_KDF_ARGON2ID) {
+            if (enc_kdf_memory < 1024) {
+                WARN("Argon2id memory %u KB is very low (insecure)", enc_kdf_memory);
+            }
+            if (enc_kdf_memory > 4194304) {  // 4GB
+                WARN("Argon2id memory %u KB seems excessive", enc_kdf_memory);
+            }
+            if (enc_kdf_parallelism == 0 || enc_kdf_parallelism > 256) {
+                WARN("Argon2id parallelism %u is out of reasonable range", enc_kdf_parallelism);
+            }
+        }
+    }
+
+    INFO("Encryption: %s (algorithm: %u, KDF: %u)",
+         enc_enabled ? "enabled" : "disabled", enc_algo, enc_kdf_algo);
+    if (enc_kdf_algo != LOLELFFS_KDF_NONE) {
+        INFO("KDF parameters: iterations=%u, memory=%u KB, parallelism=%u",
+             enc_kdf_iterations, enc_kdf_memory, enc_kdf_parallelism);
+    }
+
     /* Verify layout calculations */
     uint32_t nr_istore = le32toh(sb.nr_istore_blocks);
     uint32_t nr_ifree = le32toh(sb.nr_ifree_blocks);
@@ -198,6 +276,19 @@ static int check_root_inode(void)
     }
     INFO("Root extent block: %u", ei_block);
 
+    /* Check xattr_block if present */
+    uint32_t xattr_block = le32toh(inode->xattr_block);
+    if (xattr_block != 0) {
+        if (xattr_block < metadata_end || xattr_block >= le32toh(sb.nr_blocks)) {
+            ERROR("Root xattr_block %u outside data area [%u, %u)",
+                  xattr_block, metadata_end, le32toh(sb.nr_blocks));
+            return -1;
+        }
+        INFO("Root xattr block: %u", xattr_block);
+    } else {
+        INFO("Root has no xattrs");
+    }
+
     printf("  Root inode OK\n");
     return 0;
 }
@@ -244,8 +335,12 @@ static int check_root_extent_block(void)
 
             uint32_t ee_len = le32toh(eblock->extents[i].ee_len);
             uint32_t ee_block = le32toh(eblock->extents[i].ee_block);
+            uint16_t ee_comp_algo = le16toh(eblock->extents[i].ee_comp_algo);
+            uint8_t ee_enc_algo = eblock->extents[i].ee_enc_algo;
+            uint16_t ee_flags = le16toh(eblock->extents[i].ee_flags);
 
-            INFO("Extent %u: start=%u, len=%u, logical=%u", i, ee_start, ee_len, ee_block);
+            INFO("Extent %u: start=%u, len=%u, logical=%u, comp=%u, enc=%u, flags=0x%04x",
+                 i, ee_start, ee_len, ee_block, ee_comp_algo, ee_enc_algo, ee_flags);
 
             /* Validate extent */
             if (ee_len == 0) {
@@ -258,6 +353,24 @@ static int check_root_extent_block(void)
             if (ee_start + ee_len > le32toh(sb.nr_blocks)) {
                 ERROR("Extent %u [%u, %u) outside filesystem",
                       i, ee_start, ee_start + ee_len);
+            }
+
+            /* Validate compression algorithm */
+            if (ee_comp_algo > LOLELFFS_COMP_ZSTD) {
+                ERROR("Extent %u has invalid compression algorithm: %u", i, ee_comp_algo);
+            }
+
+            /* Validate encryption algorithm */
+            if (ee_enc_algo > LOLELFFS_ENC_CHACHA20_POLY) {
+                ERROR("Extent %u has invalid encryption algorithm: %u", i, ee_enc_algo);
+            }
+
+            /* Validate flags consistency */
+            if ((ee_flags & LOLELFFS_EXT_COMPRESSED) && ee_comp_algo == LOLELFFS_COMP_NONE) {
+                WARN("Extent %u has COMPRESSED flag but compression algorithm is NONE", i);
+            }
+            if ((ee_flags & LOLELFFS_EXT_ENCRYPTED) && ee_enc_algo == LOLELFFS_ENC_NONE) {
+                WARN("Extent %u has ENCRYPTED flag but encryption algorithm is NONE", i);
             }
         }
     }

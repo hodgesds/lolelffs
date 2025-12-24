@@ -72,6 +72,8 @@ struct inode *lolelffs_iget(struct super_block *sb, unsigned long ino)
     inode->i_blocks = le32_to_cpu(cinode->i_blocks);
     set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
+    ci->xattr_block = le32_to_cpu(cinode->xattr_block);
+
     if (S_ISDIR(inode->i_mode)) {
         ci->ei_block = le32_to_cpu(cinode->ei_block);
         inode->i_fop = &lolelffs_dir_ops;
@@ -222,6 +224,8 @@ static struct inode *lolelffs_new_inode(struct inode *dir, mode_t mode)
             inode_set_mtime_to_ts(inode, now);
         }
         inode->i_op = &symlink_inode_ops;
+        ci = LOLELFFS_INODE(inode);
+        ci->xattr_block = 0;
         return inode;
     }
 
@@ -243,6 +247,8 @@ static struct inode *lolelffs_new_inode(struct inode *dir, mode_t mode)
     inode_init_owner(inode, dir, mode);
 #endif
     inode->i_blocks = 1;
+    ci->xattr_block = 0; /* No xattrs initially */
+
     if (S_ISDIR(mode)) {
         ci->ei_block = bno;
         inode->i_size = LOLELFFS_BLOCK_SIZE;
@@ -579,12 +585,16 @@ scrub:
     brelse(bh);
 
 clean_inode:
+    /* Free xattr blocks if any */
+    lolelffs_xattr_free_blocks(sbi, inode);
+
     /* Cleanup inode and mark dirty */
     {
         struct timespec64 zero_ts = {0, 0};
 
         inode->i_blocks = 0;
         LOLELFFS_INODE(inode)->ei_block = 0;
+        LOLELFFS_INODE(inode)->xattr_block = 0;
         inode->i_size = 0;
         i_uid_write(inode, 0);
         i_gid_write(inode, 0);
@@ -914,7 +924,7 @@ static int lolelffs_symlink(struct inode *dir,
     int ret= 0, alloc = false, bno = 0;
     int ei = 0, bi = 0, fi = 0;
 
-    /* Check if symlink content is not too long */
+    /* Check if symlink content is not too long (max 27 chars + NUL) */
     if (l > sizeof(ci->i_data))
         return -ENAMETOOLONG;
 
@@ -1001,6 +1011,7 @@ static const struct inode_operations lolelffs_inode_ops = {
     .rename = lolelffs_rename,
     .link = lolelffs_link,
     .symlink = lolelffs_symlink,
+    .listxattr = lolelffs_listxattr,
 };
 
 static const struct inode_operations symlink_inode_ops = {

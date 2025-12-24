@@ -45,6 +45,10 @@ enum Commands {
 
         /// Path to file
         path: String,
+
+        /// Password for encrypted filesystem
+        #[arg(short = 'P', long)]
+        password: Option<String>,
     },
 
     /// Write data to a file
@@ -63,6 +67,10 @@ enum Commands {
         /// Create file if it doesn't exist
         #[arg(short, long)]
         create: bool,
+
+        /// Password for encrypted filesystem
+        #[arg(short = 'P', long)]
+        password: Option<String>,
     },
 
     /// Create a directory
@@ -125,6 +133,22 @@ enum Commands {
         /// Size in bytes (e.g., 1M, 10M, 100M)
         #[arg(short, long)]
         size: Option<String>,
+
+        /// Enable encryption
+        #[arg(short, long)]
+        encrypt: bool,
+
+        /// Password for encryption (will prompt if not provided and --encrypt is set)
+        #[arg(short, long)]
+        password: Option<String>,
+
+        /// Encryption algorithm (aes-256-xts or chacha20-poly1305)
+        #[arg(long, default_value = "aes-256-xts")]
+        algo: String,
+
+        /// PBKDF2 iterations
+        #[arg(long, default_value = "100000")]
+        iterations: u32,
     },
 
     /// Check filesystem integrity
@@ -172,6 +196,17 @@ enum Commands {
         image: PathBuf,
     },
 
+    /// Unlock encrypted filesystem
+    Unlock {
+        /// Filesystem image path
+        #[arg(short, long)]
+        image: PathBuf,
+
+        /// Password for decryption
+        #[arg(short, long)]
+        password: Option<String>,
+    },
+
     /// Copy file from host to filesystem
     Cp {
         /// Filesystem image path
@@ -183,6 +218,10 @@ enum Commands {
 
         /// Destination path in filesystem
         dest: String,
+
+        /// Password for encrypted filesystem
+        #[arg(short = 'P', long)]
+        password: Option<String>,
     },
 
     /// Extract file from filesystem to host
@@ -197,6 +236,64 @@ enum Commands {
         /// Destination file on host
         dest: PathBuf,
     },
+
+    /// Get an extended attribute value
+    Getfattr {
+        /// Filesystem image path
+        #[arg(short, long)]
+        image: PathBuf,
+
+        /// Path to file or directory
+        path: String,
+
+        /// Attribute name (e.g., user.comment, security.selinux)
+        name: String,
+
+        /// Print value as hex dump
+        #[arg(short = 'x', long)]
+        hex: bool,
+    },
+
+    /// Set an extended attribute
+    Setfattr {
+        /// Filesystem image path
+        #[arg(short, long)]
+        image: PathBuf,
+
+        /// Path to file or directory
+        path: String,
+
+        /// Attribute name (e.g., user.comment, security.selinux)
+        #[arg(short, long)]
+        name: String,
+
+        /// Attribute value
+        #[arg(short, long)]
+        value: String,
+    },
+
+    /// List all extended attributes
+    Listxattr {
+        /// Filesystem image path
+        #[arg(short, long)]
+        image: PathBuf,
+
+        /// Path to file or directory
+        path: String,
+    },
+
+    /// Remove an extended attribute
+    Removexattr {
+        /// Filesystem image path
+        #[arg(short, long)]
+        image: PathBuf,
+
+        /// Path to file or directory
+        path: String,
+
+        /// Attribute name
+        name: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -209,13 +306,14 @@ fn main() -> Result<()> {
             long,
             all,
         } => cmd_ls(&image, &path, long, all),
-        Commands::Cat { image, path } => cmd_cat(&image, &path),
+        Commands::Cat { image, path, password } => cmd_cat(&image, &path, password),
         Commands::Write {
             image,
             path,
             data,
             create,
-        } => cmd_write(&image, &path, data, create),
+            password,
+        } => cmd_write(&image, &path, data, create, password),
         Commands::Mkdir {
             image,
             path,
@@ -229,7 +327,9 @@ fn main() -> Result<()> {
         } => cmd_rm(&image, &path, recursive, dir),
         Commands::Touch { image, path } => cmd_touch(&image, &path),
         Commands::Stat { image, path } => cmd_stat(&image, &path),
-        Commands::Mkfs { image, size } => cmd_mkfs(&image, size),
+        Commands::Mkfs { image, size, encrypt, password, algo, iterations } => {
+            cmd_mkfs(&image, size, encrypt, password, &algo, iterations)
+        },
         Commands::Fsck { image, verbose } => cmd_fsck(&image, verbose),
         Commands::Df { image, human } => cmd_df(&image, human),
         Commands::Ln {
@@ -239,16 +339,36 @@ fn main() -> Result<()> {
             symbolic,
         } => cmd_ln(&image, &target, &link, symbolic),
         Commands::Super { image } => cmd_super(&image),
+        Commands::Unlock { image, password } => cmd_unlock(&image, password),
         Commands::Cp {
             image,
             source,
             dest,
-        } => cmd_cp(&image, &source, &dest),
+            password,
+        } => cmd_cp(&image, &source, &dest, password),
         Commands::Extract {
             image,
             source,
             dest,
         } => cmd_extract(&image, &source, &dest),
+
+        Commands::Getfattr {
+            image,
+            path,
+            name,
+            hex,
+        } => cmd_getfattr(&image, &path, &name, hex),
+
+        Commands::Setfattr {
+            image,
+            path,
+            name,
+            value,
+        } => cmd_setfattr(&image, &path, &name, &value),
+
+        Commands::Listxattr { image, path } => cmd_listxattr(&image, &path),
+
+        Commands::Removexattr { image, path, name } => cmd_removexattr(&image, &path, &name),
     }
 }
 
@@ -306,8 +426,12 @@ fn print_long_entry(filename: &str, _inode_num: u32, inode: &Inode) {
     );
 }
 
-fn cmd_cat(image: &PathBuf, path: &str) -> Result<()> {
+fn cmd_cat(image: &PathBuf, path: &str, password: Option<String>) -> Result<()> {
     let mut fs = LolelfFs::open_readonly(image)?;
+
+    // Unlock if encrypted and password provided
+    unlock_if_needed(&mut fs, password)?;
+
     let inode_num = fs.resolve_path(path)?;
 
     let data = fs.read_file(inode_num)?;
@@ -316,8 +440,11 @@ fn cmd_cat(image: &PathBuf, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_write(image: &PathBuf, path: &str, data: Option<String>, create: bool) -> Result<()> {
+fn cmd_write(image: &PathBuf, path: &str, data: Option<String>, create: bool, password: Option<String>) -> Result<()> {
     let mut fs = LolelfFs::open(image)?;
+
+    // Unlock if encrypted and password provided
+    unlock_if_needed(&mut fs, password)?;
 
     // Get the data to write
     let content = match data {
@@ -494,7 +621,14 @@ fn cmd_stat(image: &PathBuf, path: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_mkfs(image: &PathBuf, size: Option<String>) -> Result<()> {
+fn cmd_mkfs(
+    image: &PathBuf,
+    size: Option<String>,
+    encrypt: bool,
+    password: Option<String>,
+    algo: &str,
+    iterations: u32,
+) -> Result<()> {
     let size_bytes = match size {
         Some(s) => parse_size(&s)?,
         None => {
@@ -512,7 +646,37 @@ fn cmd_mkfs(image: &PathBuf, size: Option<String>) -> Result<()> {
         );
     }
 
-    let fs = LolelfFs::create(image, size_bytes)?;
+    // Handle encryption if requested
+    let enc_config = if encrypt {
+        // Get password
+        let pwd = match password {
+            Some(p) => p,
+            None => {
+                eprint!("Enter encryption password: ");
+                io::stderr().flush()?;
+                let mut pwd = String::new();
+                io::stdin().read_line(&mut pwd)?;
+                pwd.trim().to_string()
+            }
+        };
+
+        if pwd.is_empty() {
+            bail!("Password cannot be empty");
+        }
+
+        // Parse algorithm
+        let enc_algo = match algo {
+            "aes-256-xts" => LOLELFFS_ENC_AES256_XTS,
+            "chacha20-poly1305" => LOLELFFS_ENC_CHACHA20_POLY,
+            _ => bail!("Unknown encryption algorithm: {}", algo),
+        };
+
+        Some((pwd, enc_algo, iterations))
+    } else {
+        None
+    };
+
+    let fs = LolelfFs::create_with_encryption(image, size_bytes, enc_config)?;
     let stats = fs.statfs();
 
     println!("Created lolelffs filesystem on {}", image.display());
@@ -522,6 +686,9 @@ fn cmd_mkfs(image: &PathBuf, size: Option<String>) -> Result<()> {
     println!("  Total inodes: {}", stats.total_inodes);
     println!("  Free blocks: {}", stats.free_blocks);
     println!("  Free inodes: {}", stats.free_inodes);
+    if encrypt {
+        println!("  Encryption: enabled ({} with PBKDF2)", algo);
+    }
 
     Ok(())
 }
@@ -700,8 +867,48 @@ fn cmd_super(image: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn cmd_cp(image: &PathBuf, source: &PathBuf, dest: &str) -> Result<()> {
+fn cmd_unlock(image: &PathBuf, password: Option<String>) -> Result<()> {
     let mut fs = LolelfFs::open(image)?;
+
+    // Check if encryption is enabled
+    if fs.superblock.enc_enabled == 0 {
+        println!("Filesystem is not encrypted");
+        return Ok(());
+    }
+
+    // Check if already unlocked
+    if fs.enc_unlocked {
+        println!("Filesystem is already unlocked");
+        return Ok(());
+    }
+
+    // Get password
+    let pwd = match password {
+        Some(p) => p,
+        None => {
+            eprint!("Enter password: ");
+            io::stderr().flush()?;
+            let mut pwd = String::new();
+            io::stdin().read_line(&mut pwd)?;
+            pwd.trim().to_string()
+        }
+    };
+
+    // Unlock the filesystem
+    fs.unlock(&pwd)?;
+
+    println!("Filesystem unlocked successfully");
+    println!("  Encryption algorithm: {}",
+        crate::encrypt::get_algo_name(fs.superblock.enc_default_algo as u8));
+
+    Ok(())
+}
+
+fn cmd_cp(image: &PathBuf, source: &PathBuf, dest: &str, password: Option<String>) -> Result<()> {
+    let mut fs = LolelfFs::open(image)?;
+
+    // Unlock if encrypted and password provided
+    unlock_if_needed(&mut fs, password)?;
 
     // Read source file from host
     let content = std::fs::read(source)
@@ -746,6 +953,76 @@ fn cmd_extract(image: &PathBuf, source: &str, dest: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn cmd_getfattr(image: &PathBuf, path: &str, name: &str, hex: bool) -> Result<()> {
+    let mut fs = LolelfFs::open(image)?;
+    let inode_num = fs.resolve_path(path)?;
+
+    let value = fs.get_xattr(inode_num, name)?;
+
+    println!("# file: {}", path);
+    if hex || value.iter().any(|&b| b < 32 && b != b'\n' && b != b'\t') {
+        // Print as hex if requested or if binary data
+        print!("{}=0x", name);
+        for byte in &value {
+            print!("{:02x}", byte);
+        }
+        println!();
+    } else {
+        // Print as string
+        match std::str::from_utf8(&value) {
+            Ok(s) => println!("{}=\"{}\"", name, s),
+            Err(_) => {
+                print!("{}=0x", name);
+                for byte in &value {
+                    print!("{:02x}", byte);
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_setfattr(image: &PathBuf, path: &str, name: &str, value: &str) -> Result<()> {
+    let mut fs = LolelfFs::open(image)?;
+    let inode_num = fs.resolve_path(path)?;
+
+    fs.set_xattr(inode_num, name, value.as_bytes())?;
+    println!("Set {} on {}", name, path);
+
+    Ok(())
+}
+
+fn cmd_listxattr(image: &PathBuf, path: &str) -> Result<()> {
+    let mut fs = LolelfFs::open(image)?;
+    let inode_num = fs.resolve_path(path)?;
+
+    let xattrs = fs.list_xattrs(inode_num)?;
+
+    if xattrs.is_empty() {
+        println!("# file: {}", path);
+        println!("(no extended attributes)");
+    } else {
+        println!("# file: {}", path);
+        for xattr in xattrs {
+            println!("{}", xattr);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_removexattr(image: &PathBuf, path: &str, name: &str) -> Result<()> {
+    let mut fs = LolelfFs::open(image)?;
+    let inode_num = fs.resolve_path(path)?;
+
+    fs.remove_xattr(inode_num, name)?;
+    println!("Removed {} from {}", name, path);
+
+    Ok(())
+}
+
 // Helper functions
 
 fn split_path(path: &str) -> (String, &str) {
@@ -755,6 +1032,28 @@ fn split_path(path: &str) -> (String, &str) {
         Some(idx) => (path[..idx].to_string(), &path[idx + 1..]),
         None => ("/".to_string(), path),
     }
+}
+
+/// Unlock filesystem if it's encrypted and password is provided
+fn unlock_if_needed(fs: &mut LolelfFs, password: Option<String>) -> Result<()> {
+    // Check if filesystem is encrypted
+    if fs.superblock.enc_enabled == 0 {
+        return Ok(());
+    }
+
+    // If already unlocked, nothing to do
+    if fs.enc_unlocked {
+        return Ok(());
+    }
+
+    // Need password to unlock
+    let pwd = match password {
+        Some(p) => p,
+        None => bail!("Filesystem is encrypted, please provide --password"),
+    };
+
+    fs.unlock(&pwd)?;
+    Ok(())
 }
 
 fn parse_size(s: &str) -> Result<u64> {

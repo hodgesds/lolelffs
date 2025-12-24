@@ -6,6 +6,8 @@
 #include <linux/module.h>
 
 #include "lolelffs.h"
+#include "compress.h"
+#include "encrypt.h"
 
 /* Wrapper for fill_super to match new kernel API */
 static int lolelffs_fill_super_fc(struct super_block *sb, struct fs_context *fc)
@@ -54,20 +56,41 @@ static struct file_system_type lolelffs_file_system_type = {
 
 static int __init lolelffs_init(void)
 {
-    int ret = lolelffs_init_inode_cache();
+    int ret;
+
+    ret = lolelffs_comp_init();
+    if (ret) {
+        pr_err("compression initialization failed\n");
+        return ret;
+    }
+
+    ret = lolelffs_enc_init();
+    if (ret) {
+        pr_err("encryption initialization failed\n");
+        goto cleanup_comp;
+    }
+
+    ret = lolelffs_init_inode_cache();
     if (ret) {
         pr_err("inode cache creation failed\n");
-        goto end;
+        goto cleanup_enc;
     }
 
     ret = register_filesystem(&lolelffs_file_system_type);
     if (ret) {
         pr_err("register_filesystem() failed\n");
-        goto end;
+        goto cleanup_cache;
     }
 
     pr_info("module loaded\n");
-end:
+    return 0;
+
+cleanup_cache:
+    lolelffs_destroy_inode_cache();
+cleanup_enc:
+    lolelffs_enc_exit();
+cleanup_comp:
+    lolelffs_comp_exit();
     return ret;
 }
 
@@ -78,6 +101,8 @@ static void __exit lolelffs_exit(void)
         pr_err("unregister_filesystem() failed\n");
 
     lolelffs_destroy_inode_cache();
+    lolelffs_enc_exit();
+    lolelffs_comp_exit();
 
     pr_info("module unloaded\n");
 }

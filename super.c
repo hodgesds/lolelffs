@@ -78,6 +78,7 @@ static int lolelffs_write_inode(struct inode *inode,
     disk_inode->i_blocks = inode->i_blocks;
     disk_inode->i_nlink = inode->i_nlink;
     disk_inode->ei_block = ci->ei_block;
+    disk_inode->xattr_block = ci->xattr_block;
     strncpy(disk_inode->i_data, ci->i_data, sizeof(ci->i_data));
 
     mark_buffer_dirty(bh);
@@ -201,6 +202,7 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
     sb_set_blocksize(sb, LOLELFFS_BLOCK_SIZE);
     sb->s_maxbytes = LOLELFFS_MAX_FILESIZE;
     sb->s_op = &lolelffs_super_ops;
+    sb->s_xattr = lolelffs_xattr_handlers;
 
     /* Try to detect ELF file and find .lolfs.super section */
     /* Use bdev_file_open_by_dev to access the underlying file for loop devices */
@@ -260,6 +262,11 @@ int lolelffs_fill_super(struct super_block *sb, void *data, int silent)
 
     /* Initialize mutex for bitmap operations */
     mutex_init(&sbi->lock);
+
+    /* Initialize encryption state */
+    mutex_init(&sbi->enc_lock);
+    sbi->enc_unlocked = false;
+    memset(sbi->enc_master_key_decrypted, 0, 32);
 
     brelse(bh);
 

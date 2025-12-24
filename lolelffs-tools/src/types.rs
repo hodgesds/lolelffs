@@ -11,14 +11,43 @@ pub const LOLELFFS_BLOCK_SIZE: u32 = 4096;
 /// Number of inodes per block (4096 / 72 = 56)
 pub const LOLELFFS_INODES_PER_BLOCK: u32 = 56;
 
-/// Maximum blocks per extent
-pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT: u32 = 65536;
+/// Maximum blocks per extent (with compression)
+pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT: u32 = 2048;
 
-/// Maximum extents per file
-pub const LOLELFFS_MAX_EXTENTS: usize = 340;
+/// Maximum extents per file (24-byte extents with compression+encryption)
+/// Calculated as: (4096 - 4) / 24 = 170
+pub const LOLELFFS_MAX_EXTENTS: usize = 170;
 
 /// Maximum filename length
 pub const LOLELFFS_MAX_FILENAME: usize = 255;
+
+/// Filesystem version (always 1 - compression support is mandatory)
+pub const LOLELFFS_VERSION: u32 = 1;
+
+/// Compression algorithm IDs
+pub const LOLELFFS_COMP_NONE: u8 = 0;   // No compression
+pub const LOLELFFS_COMP_LZ4: u8 = 1;    // LZ4 (fast, good ratio)
+pub const LOLELFFS_COMP_ZLIB: u8 = 2;   // zlib/deflate (moderate speed, better ratio)
+pub const LOLELFFS_COMP_ZSTD: u8 = 3;   // zstd (configurable, best ratio)
+
+/// Encryption algorithm IDs
+pub const LOLELFFS_ENC_NONE: u8 = 0;           // No encryption
+pub const LOLELFFS_ENC_AES256_XTS: u8 = 1;     // AES-256-XTS (block device encryption)
+pub const LOLELFFS_ENC_CHACHA20_POLY: u8 = 2;  // ChaCha20-Poly1305 (authenticated encryption)
+
+/// Key derivation function IDs
+pub const LOLELFFS_KDF_NONE: u8 = 0;      // No KDF
+pub const LOLELFFS_KDF_ARGON2ID: u8 = 1;  // Argon2id (recommended)
+pub const LOLELFFS_KDF_PBKDF2: u8 = 2;    // PBKDF2-HMAC-SHA256
+
+/// Compression metadata magic
+pub const LOLELFFS_COMP_META_MAGIC: u32 = 0xC04FFEE5;
+
+/// Extent flags
+pub const LOLELFFS_EXT_COMPRESSED: u16 = 0x0001;  // Extent contains compressed blocks
+pub const LOLELFFS_EXT_ENCRYPTED: u16 = 0x0002;   // Extent contains encrypted blocks
+pub const LOLELFFS_EXT_HAS_META: u16 = 0x0004;    // Has per-block metadata
+pub const LOLELFFS_EXT_MIXED: u16 = 0x0008;       // Mixed compressed/uncompressed/encrypted
 
 /// Size of file entry structure
 pub const LOLELFFS_FILE_ENTRY_SIZE: usize = 259;
@@ -62,11 +91,48 @@ pub struct Superblock {
     pub nr_free_inodes: u32,
     /// Number of free blocks
     pub nr_free_blocks: u32,
+    /// Filesystem version (always 1)
+    pub version: u32,
+    /// Default compression algorithm
+    pub comp_default_algo: u32,
+    /// Compression enabled flag
+    pub comp_enabled: u32,
+    /// Minimum block size to compress
+    pub comp_min_block_size: u32,
+    /// Feature flags for future extensions
+    pub comp_features: u32,
+    /// Max blocks per extent (2048)
+    pub max_extent_blocks: u32,
+    /// Encryption enabled flag
+    pub enc_enabled: u32,
+    /// Default encryption algorithm
+    pub enc_default_algo: u32,
+    /// Key derivation function
+    pub enc_kdf_algo: u32,
+    /// KDF iterations
+    pub enc_kdf_iterations: u32,
+    /// KDF memory cost (KB)
+    pub enc_kdf_memory: u32,
+    /// KDF parallelism
+    pub enc_kdf_parallelism: u32,
+    /// Salt for key derivation (32 bytes)
+    pub enc_salt: [u8; 32],
+    /// Encrypted master key (32 bytes)
+    pub enc_master_key: [u8; 32],
+    /// Encryption feature flags
+    pub enc_features: u32,
+    /// Reserved for future use
+    pub reserved: [u32; 3],
 }
 
 impl Superblock {
-    /// Size of superblock on disk
-    pub const SIZE: usize = 32;
+    /// Size of superblock on disk (168 bytes with encryption)
+    pub const SIZE: usize = 168;
+
+    /// Check if compression is enabled
+    pub fn is_compression_enabled(&self) -> bool {
+        self.comp_enabled != 0
+    }
 
     /// Get the block number where inode store starts
     pub fn inode_store_start(&self) -> u32 {
@@ -89,7 +155,7 @@ impl Superblock {
     }
 }
 
-/// Inode structure (on-disk format, 64 bytes)
+/// Inode structure (on-disk format, 72 bytes)
 #[derive(Debug, Clone)]
 pub struct Inode {
     /// File mode (type + permissions)
@@ -112,12 +178,14 @@ pub struct Inode {
     pub i_nlink: u32,
     /// Block number containing extent index
     pub ei_block: u32,
-    /// Inline data (symlink target or reserved)
-    pub i_data: [u8; 32],
+    /// Block number for xattr extent index (0 = no xattrs)
+    pub xattr_block: u32,
+    /// Inline data (symlink target, max 27 chars + NUL)
+    pub i_data: [u8; 28],
 }
 
 impl Inode {
-    /// Size of inode on disk (10 * u32 + 32 bytes = 72 bytes)
+    /// Size of inode on disk (11 * u32 + 28 bytes = 72 bytes)
     pub const SIZE: usize = 72;
 
     /// Check if this inode is a directory
@@ -185,7 +253,7 @@ impl fmt::Display for Inode {
     }
 }
 
-/// Extent structure (12 bytes)
+/// Extent structure with compression and encryption support (24 bytes)
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Extent {
     /// First logical block number (in file)
@@ -194,11 +262,23 @@ pub struct Extent {
     pub ee_len: u32,
     /// First physical block number (on disk)
     pub ee_start: u32,
+    /// Compression algorithm for extent
+    pub ee_comp_algo: u16,
+    /// Encryption algorithm for extent
+    pub ee_enc_algo: u8,
+    /// Reserved for alignment
+    pub ee_reserved: u8,
+    /// Flags (LOLELFFS_EXT_*)
+    pub ee_flags: u16,
+    /// Reserved for alignment
+    pub ee_reserved2: u16,
+    /// Block number of metadata (compression/encryption)
+    pub ee_meta: u32,
 }
 
 impl Extent {
     /// Size of extent on disk
-    pub const SIZE: usize = 12;
+    pub const SIZE: usize = 24;
 
     /// Check if extent is empty/unused
     pub fn is_empty(&self) -> bool {
@@ -217,6 +297,113 @@ impl Extent {
         } else {
             None
         }
+    }
+
+    /// Check if extent is compressed
+    pub fn is_compressed(&self) -> bool {
+        self.ee_flags & LOLELFFS_EXT_COMPRESSED != 0
+    }
+
+    /// Check if extent has per-block metadata
+    pub fn has_metadata(&self) -> bool {
+        self.ee_flags & LOLELFFS_EXT_HAS_META != 0
+    }
+
+    /// Check if extent has mixed compression
+    pub fn is_mixed(&self) -> bool {
+        self.ee_flags & LOLELFFS_EXT_MIXED != 0
+    }
+}
+
+/// Compression metadata for a single block (4 bytes)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompressionBlockMeta {
+    /// Compressed size (0 = uncompressed)
+    pub comp_size: u16,
+    /// Algorithm override (0 = use extent default)
+    pub comp_algo: u8,
+    /// Reserved flags
+    pub flags: u8,
+}
+
+impl CompressionBlockMeta {
+    /// Size of compression block metadata on disk
+    pub const SIZE: usize = 4;
+
+    /// Maximum number of blocks that can fit in a metadata block
+    pub const MAX_BLOCKS: usize = 2040;
+}
+
+/// Compression metadata block (4096 bytes, supports up to 2040 blocks)
+#[derive(Debug, Clone)]
+pub struct CompressionMetadata {
+    /// Magic number (LOLELFFS_COMP_META_MAGIC)
+    pub magic: u32,
+    /// Number of blocks with metadata
+    pub nr_blocks: u32,
+    /// Per-block metadata entries
+    pub blocks: Vec<CompressionBlockMeta>,
+}
+
+impl CompressionMetadata {
+    /// Read compression metadata from raw block data
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        use byteorder::{LittleEndian, ReadBytesExt};
+        use std::io::Cursor;
+
+        if data.len() < LOLELFFS_BLOCK_SIZE as usize {
+            return None;
+        }
+
+        let mut cursor = Cursor::new(data);
+        let magic = cursor.read_u32::<LittleEndian>().ok()?;
+
+        if magic != LOLELFFS_COMP_META_MAGIC {
+            return None;
+        }
+
+        let nr_blocks = cursor.read_u32::<LittleEndian>().ok()?;
+
+        if nr_blocks as usize > CompressionBlockMeta::MAX_BLOCKS {
+            return None;
+        }
+
+        let mut blocks = Vec::with_capacity(nr_blocks as usize);
+        for _ in 0..nr_blocks {
+            let comp_size = cursor.read_u16::<LittleEndian>().ok()?;
+            let comp_algo = cursor.read_u8().ok()?;
+            let flags = cursor.read_u8().ok()?;
+            blocks.push(CompressionBlockMeta {
+                comp_size,
+                comp_algo,
+                flags,
+            });
+        }
+
+        Some(CompressionMetadata {
+            magic,
+            nr_blocks,
+            blocks,
+        })
+    }
+
+    /// Serialize compression metadata to bytes
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use byteorder::{LittleEndian, WriteBytesExt};
+
+        let mut data = Vec::with_capacity(LOLELFFS_BLOCK_SIZE as usize);
+        data.write_u32::<LittleEndian>(self.magic).unwrap();
+        data.write_u32::<LittleEndian>(self.nr_blocks).unwrap();
+
+        for block in &self.blocks {
+            data.write_u16::<LittleEndian>(block.comp_size).unwrap();
+            data.write_u8(block.comp_algo).unwrap();
+            data.write_u8(block.flags).unwrap();
+        }
+
+        // Pad to block size
+        data.resize(LOLELFFS_BLOCK_SIZE as usize, 0);
+        data
     }
 }
 
@@ -243,10 +430,22 @@ impl ExtentIndex {
             let ee_block = cursor.read_u32::<LittleEndian>().unwrap_or(0);
             let ee_len = cursor.read_u32::<LittleEndian>().unwrap_or(0);
             let ee_start = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            let ee_comp_algo = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_enc_algo = cursor.read_u8().unwrap_or(0);
+            let ee_reserved = cursor.read_u8().unwrap_or(0);
+            let ee_flags = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_reserved2 = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_meta = cursor.read_u32::<LittleEndian>().unwrap_or(0);
             extents.push(Extent {
                 ee_block,
                 ee_len,
                 ee_start,
+                ee_comp_algo,
+                ee_enc_algo,
+                ee_reserved,
+                ee_flags,
+                ee_reserved2,
+                ee_meta,
             });
         }
 
@@ -265,6 +464,12 @@ impl ExtentIndex {
             data.write_u32::<LittleEndian>(extent.ee_block).unwrap();
             data.write_u32::<LittleEndian>(extent.ee_len).unwrap();
             data.write_u32::<LittleEndian>(extent.ee_start).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_comp_algo).unwrap();
+            data.write_u8(extent.ee_enc_algo).unwrap();
+            data.write_u8(extent.ee_reserved).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_flags).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_reserved2).unwrap();
+            data.write_u32::<LittleEndian>(extent.ee_meta).unwrap();
         }
 
         // Pad to block size
@@ -362,6 +567,144 @@ impl FileEntry {
 
         // Pad to full filename size
         data.resize(Self::SIZE, 0);
+        data
+    }
+}
+
+/// Extended attribute namespace
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XattrNamespace {
+    User = 0,
+    Trusted = 1,
+    System = 2,
+    Security = 3,
+}
+
+impl XattrNamespace {
+    /// Get namespace from index
+    pub fn from_index(index: u8) -> Option<Self> {
+        match index {
+            0 => Some(XattrNamespace::User),
+            1 => Some(XattrNamespace::Trusted),
+            2 => Some(XattrNamespace::System),
+            3 => Some(XattrNamespace::Security),
+            _ => None,
+        }
+    }
+
+    /// Get namespace prefix string
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            XattrNamespace::User => "user.",
+            XattrNamespace::Trusted => "trusted.",
+            XattrNamespace::System => "system.",
+            XattrNamespace::Security => "security.",
+        }
+    }
+}
+
+/// Extended attribute entry header (12 bytes)
+#[derive(Debug, Clone)]
+pub struct XattrEntry {
+    /// Length of name (not including NUL)
+    pub name_len: u8,
+    /// Namespace index
+    pub name_index: XattrNamespace,
+    /// Length of value
+    pub value_len: u16,
+    /// Offset from entry header to value
+    pub value_offset: u32,
+    /// Attribute name (without namespace prefix)
+    pub name: String,
+    /// Attribute value
+    pub value: Vec<u8>,
+}
+
+impl XattrEntry {
+    /// Size of entry header on disk
+    pub const HEADER_SIZE: usize = 12;
+
+    /// Get full attribute name (with namespace prefix)
+    pub fn full_name(&self) -> String {
+        format!("{}{}", self.name_index.prefix(), self.name)
+    }
+}
+
+/// Extended attribute extent index
+#[derive(Debug, Clone)]
+pub struct XattrIndex {
+    /// Total size of all xattrs
+    pub total_size: u32,
+    /// Number of xattr entries
+    pub count: u32,
+    /// Array of extents
+    pub extents: Vec<Extent>,
+}
+
+impl XattrIndex {
+    /// Read xattr index from raw block data
+    pub fn from_bytes(data: &[u8]) -> Self {
+        use byteorder::{LittleEndian, ReadBytesExt};
+        use std::io::Cursor;
+
+        let mut cursor = Cursor::new(data);
+        let total_size = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+        let count = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+
+        let mut extents = Vec::with_capacity(LOLELFFS_MAX_EXTENTS);
+        for _ in 0..LOLELFFS_MAX_EXTENTS {
+            let ee_block = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            let ee_len = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            let ee_start = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            let ee_comp_algo = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_enc_algo = cursor.read_u8().unwrap_or(0);
+            let ee_reserved = cursor.read_u8().unwrap_or(0);
+            let ee_flags = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_reserved2 = cursor.read_u16::<LittleEndian>().unwrap_or(0);
+            let ee_meta = cursor.read_u32::<LittleEndian>().unwrap_or(0);
+            extents.push(Extent {
+                ee_block,
+                ee_len,
+                ee_start,
+                ee_comp_algo,
+                ee_enc_algo,
+                ee_reserved,
+                ee_flags,
+                ee_reserved2,
+                ee_meta,
+            });
+        }
+
+        XattrIndex {
+            total_size,
+            count,
+            extents,
+        }
+    }
+
+    /// Serialize xattr index to bytes
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use byteorder::{LittleEndian, WriteBytesExt};
+
+        let mut data = Vec::with_capacity(LOLELFFS_BLOCK_SIZE as usize);
+        data.write_u32::<LittleEndian>(self.total_size).unwrap();
+        data.write_u32::<LittleEndian>(self.count).unwrap();
+
+        for i in 0..LOLELFFS_MAX_EXTENTS {
+            let extent = self.extents.get(i).copied().unwrap_or_default();
+            data.write_u32::<LittleEndian>(extent.ee_block).unwrap();
+            data.write_u32::<LittleEndian>(extent.ee_len).unwrap();
+            data.write_u32::<LittleEndian>(extent.ee_start).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_comp_algo).unwrap();
+            data.write_u8(extent.ee_enc_algo).unwrap();
+            data.write_u8(extent.ee_reserved).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_flags).unwrap();
+            data.write_u16::<LittleEndian>(extent.ee_reserved2).unwrap();
+            data.write_u32::<LittleEndian>(extent.ee_meta).unwrap();
+        }
+
+        // Pad to block size
+        data.resize(LOLELFFS_BLOCK_SIZE as usize, 0);
         data
     }
 }

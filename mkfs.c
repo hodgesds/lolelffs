@@ -15,7 +15,7 @@
 
 struct superblock {
     struct lolelffs_sb_info info;
-    char padding[4064]; /* Padding to match block size */
+    char padding[LOLELFFS_BLOCK_SIZE - sizeof(struct lolelffs_sb_info)];
 };
 
 /* Returns ceil(a/b) */
@@ -54,6 +54,24 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
         .nr_bfree_blocks = htole32(nr_bfree_blocks),
         .nr_free_inodes = htole32(nr_inodes - 1),
         .nr_free_blocks = htole32(nr_data_blocks - 1),
+        /* Compression support */
+        .version = htole32(LOLELFFS_VERSION),
+        .comp_default_algo = htole32(LOLELFFS_COMP_LZ4),
+        .comp_enabled = htole32(1),  /* Compression enabled by default */
+        .comp_min_block_size = htole32(128),  /* Don't compress blocks < 128 bytes */
+        .comp_features = htole32(0),
+        .max_extent_blocks = htole32(LOLELFFS_MAX_BLOCKS_PER_EXTENT),
+        /* Encryption support */
+        .enc_enabled = htole32(0),  /* Encryption disabled by default */
+        .enc_default_algo = htole32(LOLELFFS_ENC_NONE),
+        .enc_kdf_algo = htole32(LOLELFFS_KDF_ARGON2ID),
+        .enc_kdf_iterations = htole32(3),
+        .enc_kdf_memory = htole32(65536),  /* 64 MB */
+        .enc_kdf_parallelism = htole32(4),
+        .enc_salt = {0},
+        .enc_master_key = {0},
+        .enc_features = htole32(0),
+        .reserved = {0},
     };
 
     ssize_t ret = write(fd, sb, sizeof(struct superblock));
@@ -62,19 +80,32 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
         return NULL;
     }
 
+    const char *comp_algo_str = "none";
+    switch (le32toh(sb->info.comp_default_algo)) {
+        case LOLELFFS_COMP_LZ4: comp_algo_str = "lz4"; break;
+        case LOLELFFS_COMP_ZLIB: comp_algo_str = "zlib"; break;
+        case LOLELFFS_COMP_ZSTD: comp_algo_str = "zstd"; break;
+    }
+
     printf(
         "Superblock: (%ld)\n"
         "\tmagic=%#x\n"
+        "\tversion=%u\n"
         "\tnr_blocks=%u\n"
         "\tnr_inodes=%u (istore=%u blocks)\n"
         "\tnr_ifree_blocks=%u\n"
         "\tnr_bfree_blocks=%u\n"
         "\tnr_free_inodes=%u\n"
-        "\tnr_free_blocks=%u\n",
-        sizeof(struct superblock), sb->info.magic, sb->info.nr_blocks,
-        sb->info.nr_inodes, sb->info.nr_istore_blocks, sb->info.nr_ifree_blocks,
-        sb->info.nr_bfree_blocks, sb->info.nr_free_inodes,
-        sb->info.nr_free_blocks);
+        "\tnr_free_blocks=%u\n"
+        "\tcompression=%s (algo=%s, enabled=%u)\n"
+        "\tmax_extent_blocks=%u\n",
+        sizeof(struct superblock), le32toh(sb->info.magic),
+        le32toh(sb->info.version), le32toh(sb->info.nr_blocks),
+        le32toh(sb->info.nr_inodes), le32toh(sb->info.nr_istore_blocks),
+        le32toh(sb->info.nr_ifree_blocks), le32toh(sb->info.nr_bfree_blocks),
+        le32toh(sb->info.nr_free_inodes), le32toh(sb->info.nr_free_blocks),
+        le32toh(sb->info.comp_enabled) ? "yes" : "no", comp_algo_str,
+        le32toh(sb->info.comp_enabled), le32toh(sb->info.max_extent_blocks));
 
     return sb;
 }
@@ -102,6 +133,7 @@ static int write_inode_store(int fd, struct superblock *sb)
     inode->i_blocks = htole32(1);
     inode->i_nlink = htole32(2);
     inode->ei_block = htole32(first_data_block);
+    inode->xattr_block = 0; /* No xattrs initially */
 
     ssize_t ret = write(fd, block, LOLELFFS_BLOCK_SIZE);
     if (ret != LOLELFFS_BLOCK_SIZE) {

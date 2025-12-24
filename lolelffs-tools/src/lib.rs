@@ -8,6 +8,9 @@ pub mod fs;
 pub mod bitmap;
 pub mod dir;
 pub mod file;
+pub mod xattr;
+pub mod compress;
+pub mod encrypt;
 
 pub use types::*;
 pub use fs::LolelfFs;

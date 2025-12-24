@@ -4,8 +4,10 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/uaccess.h>
 
 #include "lolelffs.h"
+#include "encrypt.h"
 
 /*
  * Iterate over the files contained in dir and commit them in ctx.
@@ -86,7 +88,137 @@ release_bh:
     return ret;
 }
 
+/**
+ * lolelffs_ioctl - Handle ioctl commands for lolelffs
+ * @file: File pointer
+ * @cmd: ioctl command
+ * @arg: ioctl argument
+ *
+ * Handles filesystem-level ioctl commands, including unlocking encrypted
+ * filesystems and querying encryption status.
+ */
+static long lolelffs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+    struct inode *inode = file_inode(file);
+    struct super_block *sb = inode->i_sb;
+    struct lolelffs_sb_info *sbi = LOLELFFS_SB(sb);
+    struct buffer_head *bh;
+    struct lolelffs_sb_info *csb;
+    int ret;
+
+    /* Read superblock to get encryption info */
+    bh = LOLELFFS_SB_BREAD(sb, 0);
+    if (!bh)
+        return -EIO;
+    csb = (struct lolelffs_sb_info *)bh->b_data;
+
+    switch (cmd) {
+    case LOLELFFS_IOC_UNLOCK: {
+        struct lolelffs_ioctl_unlock req;
+        u8 user_key[32];
+        u8 master_key[32];
+
+        /* Check if encryption is enabled */
+        if (csb->enc_enabled == 0) {
+            pr_info("filesystem is not encrypted\n");
+            ret = -EINVAL;
+            goto out;
+        }
+
+        /* Check if already unlocked */
+        mutex_lock(&sbi->enc_lock);
+        if (sbi->enc_unlocked) {
+            pr_info("filesystem is already unlocked\n");
+            mutex_unlock(&sbi->enc_lock);
+            ret = 0;
+            goto out;
+        }
+        mutex_unlock(&sbi->enc_lock);
+
+        /* Copy password from userspace */
+        if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+            ret = -EFAULT;
+            goto out;
+        }
+
+        /* Ensure null termination */
+        req.password[sizeof(req.password) - 1] = '\0';
+
+        /* Derive user key from password */
+        ret = lolelffs_derive_key(
+            csb->enc_kdf_algo,
+            req.password,
+            req.password_len,
+            csb->enc_salt,
+            csb->enc_kdf_iterations,
+            csb->enc_kdf_memory,
+            csb->enc_kdf_parallelism,
+            user_key);
+
+        if (ret < 0) {
+            pr_err("failed to derive key from password: %d\n", ret);
+            goto out_zero;
+        }
+
+        /* Decrypt master key */
+        ret = lolelffs_decrypt_master_key(
+            csb->enc_master_key,
+            user_key,
+            master_key);
+
+        if (ret < 0) {
+            pr_err("failed to decrypt master key: %d\n", ret);
+            goto out_zero;
+        }
+
+        /* Store decrypted master key and mark as unlocked */
+        mutex_lock(&sbi->enc_lock);
+        memcpy(sbi->enc_master_key_decrypted, master_key, 32);
+        sbi->enc_unlocked = true;
+        mutex_unlock(&sbi->enc_lock);
+
+        pr_info("filesystem unlocked successfully\n");
+        ret = 0;
+
+out_zero:
+        /* Zero sensitive data */
+        memzero_explicit(user_key, sizeof(user_key));
+        memzero_explicit(master_key, sizeof(master_key));
+        memzero_explicit(&req, sizeof(req));
+        break;
+    }
+
+    case LOLELFFS_IOC_ENC_STATUS: {
+        struct lolelffs_ioctl_enc_status status;
+
+        status.enc_enabled = csb->enc_enabled;
+        status.enc_algorithm = csb->enc_default_algo;
+
+        mutex_lock(&sbi->enc_lock);
+        status.enc_unlocked = sbi->enc_unlocked ? 1 : 0;
+        mutex_unlock(&sbi->enc_lock);
+
+        if (copy_to_user((void __user *)arg, &status, sizeof(status))) {
+            ret = -EFAULT;
+            goto out;
+        }
+
+        ret = 0;
+        break;
+    }
+
+    default:
+        ret = -ENOTTY;
+        break;
+    }
+
+out:
+    brelse(bh);
+    return ret;
+}
+
 const struct file_operations lolelffs_dir_ops = {
     .owner = THIS_MODULE,
     .iterate_shared = lolelffs_iterate,
+    .unlocked_ioctl = lolelffs_ioctl,
 };

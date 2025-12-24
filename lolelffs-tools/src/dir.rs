@@ -228,6 +228,12 @@ impl LolelfFs {
                 ee_block: next_logical,
                 ee_len: 1,
                 ee_start: new_block,
+                ee_comp_algo: LOLELFFS_COMP_NONE as u16,
+                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_reserved: 0,
+                ee_flags: 0,
+                ee_reserved2: 0,
+                ee_meta: 0,
             };
 
             // Initialize the new block
@@ -358,7 +364,8 @@ impl LolelfFs {
             i_blocks: 0,
             i_nlink: 2, // . and parent's link
             ei_block,
-            i_data: [0u8; 32],
+            xattr_block: 0, // No xattrs initially
+            i_data: [0u8; 28],
         };
         self.write_inode(new_inode_num, &new_inode)?;
 
@@ -422,6 +429,9 @@ impl LolelfFs {
                 self.free_blocks(extent.ee_start, extent.ee_len)?;
             }
         }
+
+        // Free xattr blocks
+        self.free_inode_xattrs(dir_inode_num)?;
 
         // Free the inode
         self.free_inode(dir_inode_num)?;

@@ -1,10 +1,11 @@
 obj-m += lolelffs.o
-lolelffs-objs := fs.o super.o inode.o file.o dir.o extent.o
+lolelffs-objs := fs.o super.o inode.o file.o dir.o extent.o xattr.o compress.o encrypt.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 MKFS = mkfs.lolelffs
 FSCK = fsck.lolelffs
+UNLOCK = unlock_lolelffs
 TEST_MKFS = test_mkfs
 TEST_UNIT = test_unit
 TEST_BENCHMARK = test_benchmark
@@ -14,8 +15,8 @@ RUST_TOOLS_DIR = lolelffs-tools
 CC ?= gcc
 CFLAGS = -std=gnu99 -Wall -Wextra -g -O2
 
-all: $(MKFS) $(FSCK) rust-tools
-	make -C $(KDIR) M=$(PWD) modules
+all: $(MKFS) $(FSCK) $(UNLOCK) rust-tools
+	make -C $(KDIR) M=$(PWD) LLVM=1 modules
 
 # Build Rust CLI tools
 rust-tools:
@@ -46,6 +47,9 @@ $(MKFS): mkfs.c lolelffs.h
 	$(CC) $(CFLAGS) -o $@ $< -lelf
 
 $(FSCK): fsck.lolelffs.c lolelffs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+$(UNLOCK): unlock_lolelffs.c lolelffs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Unit tests for mkfs functionality
@@ -101,9 +105,9 @@ test-image: $(MKFS)
 	./$(MKFS) test.img
 
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	make -C $(KDIR) M=$(PWD) LLVM=1 clean
 	rm -f *~ $(PWD)/*.ur-safe
-	rm -f $(MKFS) $(FSCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
+	rm -f $(MKFS) $(FSCK) $(UNLOCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
 	rm -f test.img test/*.img
 	rm -f lolelffs lolelffs-fuse
 	cd $(RUST_TOOLS_DIR) && cargo clean
