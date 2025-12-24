@@ -81,6 +81,12 @@ static int lolelffs_file_get_block(struct inode *inode,
     /* Map the physical block to to the given buffer_head (adjust for ELF offset) */
     map_bh(bh_result, sb, bno + ((struct lolelffs_sb_info *)sb->s_fs_info)->fs_offset);
 
+    /* If we allocated a new extent, mark the index as dirty and sync it */
+    if (alloc) {
+        mark_buffer_dirty(bh_index);
+        sync_dirty_buffer(bh_index);
+    }
+
 brelse_index:
     brelse(bh_index);
 
@@ -583,6 +589,7 @@ static int lolelffs_write_end(const struct kiocb *iocb,
         inode_set_ctime_to_ts(inode, now);
     }
     mark_inode_dirty(inode);
+    lolelffs_write_inode(inode, NULL);
 
     /* If file is smaller than before, free unused blocks */
     if (nr_blocks_old > inode->i_blocks) {
@@ -616,6 +623,7 @@ static int lolelffs_write_end(const struct kiocb *iocb,
             memset(&index->extents[i], 0, sizeof(struct lolelffs_extent));
         }
         mark_buffer_dirty(bh_index);
+        sync_dirty_buffer(bh_index);
         brelse(bh_index);
     }
 end:

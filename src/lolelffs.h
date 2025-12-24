@@ -227,6 +227,8 @@ struct lolelffs_dir_block {
 
 /* superblock functions */
 int lolelffs_fill_super(struct super_block *sb, void *data, int silent);
+int lolelffs_write_inode(struct inode *inode, struct writeback_control *wbc);
+int lolelffs_sync_fs(struct super_block *sb, int wait);
 
 /* inode functions */
 int lolelffs_init_inode_cache(void);

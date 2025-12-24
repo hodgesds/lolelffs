@@ -356,6 +356,7 @@ static int lolelffs_create(struct inode *dir,
     fblock = (char *) bh2->b_data;
     memset(fblock, 0, LOLELFFS_BLOCK_SIZE);
     mark_buffer_dirty(bh2);
+    sync_dirty_buffer(bh2);
     brelse(bh2);
 
     /* Find first free slot in parent index and register new inode */
@@ -391,12 +392,15 @@ static int lolelffs_create(struct inode *dir,
 
     eblock->nr_files++;
     mark_buffer_dirty(bh2);
+    sync_dirty_buffer(bh2);
     mark_buffer_dirty(bh);
+    sync_dirty_buffer(bh);
     brelse(bh2);
     brelse(bh);
 
     /* Update stats and mark dir and new inode dirty */
     mark_inode_dirty(inode);
+    lolelffs_write_inode(inode, NULL);
     {
         struct timespec64 now = current_time(dir);
         inode_set_mtime_to_ts(dir, now);
@@ -406,6 +410,10 @@ static int lolelffs_create(struct inode *dir,
     if (S_ISDIR(mode))
         inc_nlink(dir);
     mark_inode_dirty(dir);
+    lolelffs_write_inode(dir, NULL);
+
+    /* Ensure all metadata is written to disk */
+    lolelffs_sync_fs(sb, 1);
 
     /* setup dentry */
     d_instantiate(dentry, inode);

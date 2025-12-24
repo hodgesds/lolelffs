@@ -45,8 +45,8 @@ static void lolelffs_destroy_inode(struct inode *inode)
     kmem_cache_free(lolelffs_inode_cache, ci);
 }
 
-static int lolelffs_write_inode(struct inode *inode,
-                                struct writeback_control *wbc)
+int lolelffs_write_inode(struct inode *inode,
+                         struct writeback_control *wbc)
 {
     struct lolelffs_inode *disk_inode;
     struct lolelffs_inode_info *ci = LOLELFFS_INODE(inode);
@@ -98,7 +98,7 @@ static void lolelffs_put_super(struct super_block *sb)
     }
 }
 
-static int lolelffs_sync_fs(struct super_block *sb, int wait)
+int lolelffs_sync_fs(struct super_block *sb, int wait)
 {
     struct lolelffs_sb_info *sbi = LOLELFFS_SB(sb);
     struct lolelffs_sb_info *disk_sb;

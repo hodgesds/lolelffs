@@ -17,7 +17,7 @@ CC ?= gcc
 CFLAGS = -std=gnu99 -Wall -Wextra -g -O2
 
 all: $(MKFS) $(FSCK) $(UNLOCK) rust-tools
-	make -C $(KDIR) M=$(PWD) LLVM=1 modules
+	make -C $(KDIR) M=$(PWD) modules
 
 # Build Rust CLI tools
 rust-tools:
@@ -106,7 +106,7 @@ test-image: $(MKFS)
 	./$(MKFS) test.img
 
 clean:
-	make -C $(KDIR) M=$(PWD) LLVM=1 clean
+	make -C $(KDIR) M=$(PWD) clean
 	rm -f *~ $(PWD)/*.ur-safe
 	rm -f $(MKFS) $(FSCK) $(UNLOCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
 	rm -f test.img tests/*.img
