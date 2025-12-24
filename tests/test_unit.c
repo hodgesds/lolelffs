@@ -8,7 +8,7 @@
 #include <stdint.h>
 #include <assert.h>
 
-#include "../lolelffs.h"
+#include "lolelffs.h"
 
 /* Test counters */
 static int tests_run = 0;

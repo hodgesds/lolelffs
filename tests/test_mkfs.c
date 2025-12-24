@@ -12,7 +12,7 @@
 #include <sys/wait.h>
 #include <errno.h>
 
-#include "../lolelffs.h"
+#include "lolelffs.h"
 
 /* Test counters */
 static int tests_run = 0;

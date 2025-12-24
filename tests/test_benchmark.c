@@ -16,7 +16,7 @@
 #include <time.h>
 #include <sys/time.h>
 
-#include "../lolelffs.h"
+#include "lolelffs.h"
 
 /* Benchmark counters */
 static int benchmarks_run = 0;
