@@ -1,7 +1,8 @@
 obj-m += lolelffs.o
-lolelffs-objs := fs.o super.o inode.o file.o dir.o extent.o xattr.o compress.o encrypt.o
+lolelffs-objs := src/fs.o src/super.o src/inode.o src/file.o src/dir.o src/extent.o src/xattr.o src/compress.o src/encrypt.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
+EXTRA_CFLAGS += -I$(src)/src
 
 MKFS = mkfs.lolelffs
 FSCK = fsck.lolelffs
@@ -43,30 +44,30 @@ install-fuse: fuse
 	@echo "Installing lolelffs-fuse to /usr/local/bin/"
 	install -m 755 lolelffs-fuse /usr/local/bin/
 
-$(MKFS): mkfs.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $< -lelf
+$(MKFS): src/mkfs.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $< -lelf
 
-$(FSCK): fsck.lolelffs.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $<
+$(FSCK): src/fsck.lolelffs.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $<
 
-$(UNLOCK): unlock_lolelffs.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $<
+$(UNLOCK): src/unlock_lolelffs.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $<
 
 # Unit tests for mkfs functionality
-$(TEST_MKFS): test/test_mkfs.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $< -lelf
+$(TEST_MKFS): tests/test_mkfs.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $< -lelf
 
 # Unit tests for filesystem structures
-$(TEST_UNIT): test/test_unit.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $<
+$(TEST_UNIT): tests/test_unit.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $<
 
 # Performance benchmarks
-$(TEST_BENCHMARK): test/test_benchmark.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $<
+$(TEST_BENCHMARK): tests/test_benchmark.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $<
 
 # Stress tests
-$(TEST_STRESS): test/test_stress.c lolelffs.h
-	$(CC) $(CFLAGS) -o $@ $<
+$(TEST_STRESS): tests/test_stress.c src/lolelffs.h
+	$(CC) $(CFLAGS) -iquote src -o $@ $<
 
 # Run all tests
 test: $(TEST_MKFS) $(TEST_UNIT)
@@ -97,7 +98,7 @@ test-all: test benchmark stress
 test-integration: all
 	@echo "=== Running Integration Tests ==="
 	@echo "Note: This requires root privileges and will load/unload kernel modules"
-	cd test && ./test.sh ../test.img 200 ../$(MKFS)
+	cd tests && ./test.sh ../test.img 200 ../$(MKFS)
 
 # Create a test image
 test-image: $(MKFS)
@@ -108,7 +109,7 @@ clean:
 	make -C $(KDIR) M=$(PWD) LLVM=1 clean
 	rm -f *~ $(PWD)/*.ur-safe
 	rm -f $(MKFS) $(FSCK) $(UNLOCK) $(TEST_MKFS) $(TEST_UNIT) $(TEST_BENCHMARK) $(TEST_STRESS)
-	rm -f test.img test/*.img
+	rm -f test.img tests/*.img
 	rm -f lolelffs lolelffs-fuse
 	cd $(RUST_TOOLS_DIR) && cargo clean
 

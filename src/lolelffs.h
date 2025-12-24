@@ -111,10 +111,6 @@ struct lolelffs_xattr_ei_block {
     struct lolelffs_extent extents[LOLELFFS_MAX_EXTENTS];
 };
 
-#include <linux/version.h>
-#define USER_NS_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0) && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0))
-#define MNT_IDMAP_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0))
-
 /*
  * lolelffs partition layout (within a .lolfs elf section)
  * +---------------+
@@ -196,6 +192,10 @@ struct lolelffs_sb_info {
 };
 
 #ifdef __KERNEL__
+
+#include <linux/version.h>
+#define USER_NS_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0) && LINUX_VERSION_CODE < KERNEL_VERSION(6,3,0))
+#define MNT_IDMAP_REQUIRED() (LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0))
 
 /* Helper macro to read blocks with ELF offset adjustment */
 #define LOLELFFS_SB_BREAD(sb, block) \
