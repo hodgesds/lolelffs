@@ -7,6 +7,7 @@ use fuser::{
 use libc::{c_int, EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, ENOTSUP};
 use log::{debug, error, info, warn};
 use lolelffs_tools::{Inode, LolelfFs, LOLELFFS_BLOCK_SIZE, LOLELFFS_ROOT_INO};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -59,13 +60,20 @@ struct Args {
 struct LolelfFuseFs {
     fs: Arc<Mutex<LolelfFs>>,
     read_only: bool,
+    /// Maps child inode number to parent inode number for directory traversal
+    parent_map: Arc<Mutex<HashMap<u64, u64>>>,
 }
 
 impl LolelfFuseFs {
     fn new(fs: LolelfFs, read_only: bool) -> Self {
+        let mut parent_map = HashMap::new();
+        // Root directory is its own parent
+        parent_map.insert(FUSE_ROOT_INO, FUSE_ROOT_INO);
+
         LolelfFuseFs {
             fs: Arc::new(Mutex::new(fs)),
             read_only,
+            parent_map: Arc::new(Mutex::new(parent_map)),
         }
     }
 }
@@ -176,6 +184,13 @@ impl Filesystem for LolelfFuseFs {
                         }
 
                         let fuse_ino = lolelffs_to_fuse_ino(inode_num);
+
+                        // Track parent relationship (skip . and .. to avoid confusion)
+                        if name_str != "." && name_str != ".." {
+                            let mut parent_map = self.parent_map.lock().unwrap();
+                            parent_map.insert(fuse_ino, parent);
+                        }
+
                         let attr = inode_to_attr(fuse_ino, &inode);
                         let ttl = Duration::from_secs(1);
                         reply.entry(&ttl, &attr, 0);
@@ -231,8 +246,10 @@ impl Filesystem for LolelfFuseFs {
                 let mut idx = offset;
 
                 // Add . and .. entries
+                // The offset parameter in reply.add is the offset of the NEXT entry
                 if offset == 0 {
-                    if reply.add(ino, 0, FileType::Directory, ".") {
+                    if reply.add(ino, 1, FileType::Directory, ".") {
+                        // Next offset is 1
                         reply.ok();
                         return;
                     }
@@ -240,14 +257,14 @@ impl Filesystem for LolelfFuseFs {
                 }
 
                 if offset <= 1 {
-                    let parent_ino = if ino == FUSE_ROOT_INO {
-                        FUSE_ROOT_INO
-                    } else {
-                        // For now, use the current inode (TODO: track parent)
-                        ino
+                    // Look up parent from parent_map, default to root if not found
+                    let parent_ino = {
+                        let parent_map = self.parent_map.lock().unwrap();
+                        *parent_map.get(&ino).unwrap_or(&FUSE_ROOT_INO)
                     };
 
-                    if reply.add(parent_ino, 1, FileType::Directory, "..") {
+                    if reply.add(parent_ino, 2, FileType::Directory, "..") {
+                        // Next offset is 2
                         reply.ok();
                         return;
                     }
@@ -264,6 +281,12 @@ impl Filesystem for LolelfFuseFs {
                     } else {
                         FileType::RegularFile
                     };
+
+                    // Track parent relationship for this entry
+                    {
+                        let mut parent_map = self.parent_map.lock().unwrap();
+                        parent_map.insert(file_ino, ino);
+                    }
 
                     if reply.add(file_ino, idx + 1, kind, &entry.filename) {
                         break;
@@ -390,7 +413,15 @@ impl Filesystem for LolelfFuseFs {
                             warn!("Failed to set mode: {}", e);
                         }
 
-                        let attr = inode_to_attr(lolelffs_to_fuse_ino(inode_num), &inode);
+                        let fuse_ino = lolelffs_to_fuse_ino(inode_num);
+
+                        // Track parent relationship
+                        {
+                            let mut parent_map = self.parent_map.lock().unwrap();
+                            parent_map.insert(fuse_ino, parent);
+                        }
+
+                        let attr = inode_to_attr(fuse_ino, &inode);
                         let ttl = Duration::from_secs(1);
                         reply.entry(&ttl, &attr, 0);
                     }
@@ -442,7 +473,15 @@ impl Filesystem for LolelfFuseFs {
                             warn!("Failed to set mode: {}", e);
                         }
 
-                        let attr = inode_to_attr(lolelffs_to_fuse_ino(inode_num), &inode);
+                        let fuse_ino = lolelffs_to_fuse_ino(inode_num);
+
+                        // Track parent relationship
+                        {
+                            let mut parent_map = self.parent_map.lock().unwrap();
+                            parent_map.insert(fuse_ino, parent);
+                        }
+
+                        let attr = inode_to_attr(fuse_ino, &inode);
                         let ttl = Duration::from_secs(1);
                         reply.entry(&ttl, &attr, 0);
                     }
@@ -476,8 +515,22 @@ impl Filesystem for LolelfFuseFs {
         };
 
         let mut fs = self.fs.lock().unwrap();
+
+        // Look up inode number before unlinking
+        let inode_to_remove = match fs.lookup(fuse_to_lolelffs_ino(parent), name_str) {
+            Ok(Some(ino)) => Some(lolelffs_to_fuse_ino(ino)),
+            _ => None,
+        };
+
         match fs.unlink(fuse_to_lolelffs_ino(parent), name_str) {
-            Ok(()) => reply.ok(),
+            Ok(()) => {
+                // Clean up parent tracking
+                if let Some(ino) = inode_to_remove {
+                    let mut parent_map = self.parent_map.lock().unwrap();
+                    parent_map.remove(&ino);
+                }
+                reply.ok()
+            }
             Err(e) => {
                 error!("Failed to unlink file: {}", e);
                 reply.error(map_error(&e));
@@ -502,8 +555,22 @@ impl Filesystem for LolelfFuseFs {
         };
 
         let mut fs = self.fs.lock().unwrap();
+
+        // Look up inode number before removing
+        let inode_to_remove = match fs.lookup(fuse_to_lolelffs_ino(parent), name_str) {
+            Ok(Some(ino)) => Some(lolelffs_to_fuse_ino(ino)),
+            _ => None,
+        };
+
         match fs.rmdir(fuse_to_lolelffs_ino(parent), name_str) {
-            Ok(()) => reply.ok(),
+            Ok(()) => {
+                // Clean up parent tracking
+                if let Some(ino) = inode_to_remove {
+                    let mut parent_map = self.parent_map.lock().unwrap();
+                    parent_map.remove(&ino);
+                }
+                reply.ok()
+            }
             Err(e) => {
                 error!("Failed to remove directory: {}", e);
                 reply.error(map_error(&e));
@@ -549,7 +616,15 @@ impl Filesystem for LolelfFuseFs {
         match fs.symlink(fuse_to_lolelffs_ino(parent), name_str, link_str) {
             Ok(inode_num) => match fs.read_inode(inode_num) {
                 Ok(inode) => {
-                    let attr = inode_to_attr(lolelffs_to_fuse_ino(inode_num), &inode);
+                    let fuse_ino = lolelffs_to_fuse_ino(inode_num);
+
+                    // Track parent relationship
+                    {
+                        let mut parent_map = self.parent_map.lock().unwrap();
+                        parent_map.insert(fuse_ino, parent);
+                    }
+
+                    let attr = inode_to_attr(fuse_ino, &inode);
                     let ttl = Duration::from_secs(1);
                     reply.entry(&ttl, &attr, 0);
                 }
