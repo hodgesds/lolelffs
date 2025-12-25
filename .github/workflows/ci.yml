@@ -70,6 +70,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Install FUSE dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev pkg-config
+
       - name: Run Rust tests
         run: |
           cd lolelffs-tools
@@ -169,35 +174,59 @@ jobs:
           ARCH="amd64"
 
           echo "Fetching latest kernel version from Ubuntu mainline..."
-          LATEST_VERSION=$(curl -s https://kernel.ubuntu.com/mainline/ | \
+
+          # Get list of available versions (stable only, no rc)
+          VERSIONS=$(curl -s https://kernel.ubuntu.com/mainline/ | \
             grep -oP 'v\K[0-9]+\.[0-9]+(\.[0-9]+)?' | \
             grep -v 'rc' | \
-            sort -V | \
-            tail -1)
+            sort -V -r)
 
-          echo "Latest stable kernel: ${LATEST_VERSION}"
+          echo "Available versions:"
+          echo "$VERSIONS" | head -5
 
-          # Convert version to build number (e.g., 6.13.1 -> 060131)
-          MAJOR=$(echo $LATEST_VERSION | cut -d. -f1)
-          MINOR=$(echo $LATEST_VERSION | cut -d. -f2)
-          PATCH=$(echo $LATEST_VERSION | cut -d. -f3)
-          [ -z "$PATCH" ] && PATCH=0
-          KERNEL_BUILD=$(printf "%02d%02d%02d" $MAJOR $MINOR $PATCH)
+          # Try to download kernel headers, falling back to older versions if needed
+          SUCCESS=0
+          for LATEST_VERSION in $VERSIONS; do
+            echo ""
+            echo "Trying kernel version: ${LATEST_VERSION}"
 
-          BASE_URL="https://kernel.ubuntu.com/mainline/v${LATEST_VERSION}/amd64"
+            # Convert version to build number (e.g., 6.13.1 -> 060131)
+            MAJOR=$(echo $LATEST_VERSION | cut -d. -f1)
+            MINOR=$(echo $LATEST_VERSION | cut -d. -f2)
+            PATCH=$(echo $LATEST_VERSION | cut -d. -f3)
+            [ -z "$PATCH" ] && PATCH=0
+            KERNEL_BUILD=$(printf "%02d%02d%02d" $MAJOR $MINOR $PATCH)
 
-          echo "Downloading kernel headers for ${LATEST_VERSION} (build ${KERNEL_BUILD})..."
+            BASE_URL="https://kernel.ubuntu.com/mainline/v${LATEST_VERSION}/amd64"
 
-          # Download kernel headers
-          wget ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb
-          wget ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}-generic_${LATEST_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb
+            # Check if the files exist before downloading
+            if wget --spider "${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb" 2>/dev/null; then
+              echo "Found kernel headers for ${LATEST_VERSION}"
 
-          # Install headers
-          sudo dpkg -i linux-headers-*.deb || true
-          sudo apt-get install -f -y
+              # Download kernel headers
+              wget -q ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb
+              wget -q ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}-generic_${LATEST_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb
 
-          echo "Installed kernel headers for ${LATEST_VERSION}"
-          echo "KERNEL_DIR=${LATEST_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
+              # Install headers
+              sudo dpkg -i linux-headers-*.deb || true
+              sudo apt-get install -f -y
+
+              echo "Successfully installed kernel headers for ${LATEST_VERSION}"
+              echo "KERNEL_DIR=${LATEST_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
+              SUCCESS=1
+              break
+            else
+              echo "Kernel headers not available for ${LATEST_VERSION}, trying next version..."
+            fi
+          done
+
+          if [ $SUCCESS -eq 0 ]; then
+            echo "ERROR: Could not find any available kernel headers"
+            exit 1
+          fi
+
+          echo ""
+          echo "Installed kernel modules:"
           ls -la /lib/modules/
 
       - name: Build all components

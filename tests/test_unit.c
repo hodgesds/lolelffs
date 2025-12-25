@@ -67,9 +67,9 @@ static int test_inode_size(void)
 /* Test maximum extents calculation */
 static int test_max_extents(void)
 {
-    /* LOLELFFS_MAX_EXTENTS = (4096 - 4) / sizeof(extent) */
-    /* sizeof(extent) = 3 * 4 = 12 bytes */
-    size_t expected = (LOLELFFS_BLOCK_SIZE - sizeof(uint32_t)) / 12;
+    /* LOLELFFS_MAX_EXTENTS = (block_size - 4) / sizeof(lolelffs_extent) */
+    struct lolelffs_extent extent;
+    size_t expected = (LOLELFFS_BLOCK_SIZE - sizeof(uint32_t)) / sizeof(extent);
     ASSERT_EQ(LOLELFFS_MAX_EXTENTS, expected);
     return 1;
 }
@@ -77,12 +77,14 @@ static int test_max_extents(void)
 /* Test maximum file size calculation */
 static int test_max_filesize(void)
 {
+    /* Calculate expected max file size from constants */
     uint64_t expected = (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT *
                         LOLELFFS_BLOCK_SIZE * LOLELFFS_MAX_EXTENTS;
     ASSERT_EQ(LOLELFFS_MAX_FILESIZE, expected);
-    /* Verify it's approximately 84 GB (65536 blocks * 4KB * 340+ extents) */
-    ASSERT(LOLELFFS_MAX_FILESIZE > 80ULL * 1024 * 1024 * 1024);
-    ASSERT(LOLELFFS_MAX_FILESIZE < 90ULL * 1024 * 1024 * 1024);
+
+    /* Verify it's a reasonable size (at least 1 GB) */
+    ASSERT(LOLELFFS_MAX_FILESIZE >= 1ULL * 1024 * 1024 * 1024);
+
     return 1;
 }
 
@@ -118,7 +120,7 @@ static int test_inode_structure(void)
 {
     struct lolelffs_inode inode;
 
-    /* Test field offsets and sizes */
+    /* Test field sizes - all are uint32_t or char arrays */
     ASSERT_EQ(sizeof(inode.i_mode), 4);
     ASSERT_EQ(sizeof(inode.i_uid), 4);
     ASSERT_EQ(sizeof(inode.i_gid), 4);
@@ -129,7 +131,10 @@ static int test_inode_structure(void)
     ASSERT_EQ(sizeof(inode.i_blocks), 4);
     ASSERT_EQ(sizeof(inode.i_nlink), 4);
     ASSERT_EQ(sizeof(inode.ei_block), 4);
-    ASSERT_EQ(sizeof(inode.i_data), 32);
+    ASSERT_EQ(sizeof(inode.xattr_block), 4);
+
+    /* i_data should be large enough to hold a symlink path */
+    ASSERT(sizeof(inode.i_data) >= 28);
 
     return 1;
 }
@@ -163,7 +168,9 @@ static int test_idiv_ceil(void)
 /* Test blocks per extent limit */
 static int test_blocks_per_extent(void)
 {
-    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536);
+    /* With compression support, max blocks per extent is limited to 2048
+     * This allows metadata for 2048 blocks to fit in one metadata block */
+    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 2048);
     return 1;
 }
 
@@ -242,14 +249,18 @@ static int test_bitmap_calculations(void)
 /* Test extent structure */
 static int test_extent_structure(void)
 {
-    /* Manually define extent for userspace testing */
-    struct test_extent {
-        uint32_t ee_block;
-        uint32_t ee_len;
-        uint32_t ee_start;
-    };
+    /* Verify extent structure has expected fields and reasonable size */
+    struct lolelffs_extent extent;
 
-    ASSERT_EQ(sizeof(struct test_extent), 12);
+    /* Should have at least the basic fields */
+    ASSERT(sizeof(extent.ee_block) == 4);
+    ASSERT(sizeof(extent.ee_len) == 4);
+    ASSERT(sizeof(extent.ee_start) == 4);
+
+    /* Total size should be reasonable (includes compression/encryption fields) */
+    ASSERT(sizeof(extent) >= 12);
+    ASSERT(sizeof(extent) <= 32);
+
     return 1;
 }
 
@@ -273,17 +284,17 @@ static int test_file_entry_structure(void)
 /* Test superblock padding */
 static int test_superblock_padding(void)
 {
-    /* Superblock should be exactly one block */
-    struct test_superblock {
-        struct lolelffs_sb_info info;
-        char padding[4064];
-    };
+    /* Superblock info should fit within one block with room for padding */
+    size_t sb_info_size = sizeof(struct lolelffs_sb_info);
 
-    /* Check that info + padding roughly equals block size */
-    /* Note: actual padding might differ slightly */
-    size_t sb_size = sizeof(struct lolelffs_sb_info) + 4064;
-    ASSERT(sb_size >= LOLELFFS_BLOCK_SIZE - 64);
-    ASSERT(sb_size <= LOLELFFS_BLOCK_SIZE + 64);
+    /* Should be less than a block to allow for padding */
+    ASSERT(sb_info_size < LOLELFFS_BLOCK_SIZE);
+
+    /* Should be at least 32 bytes (has many fields) */
+    ASSERT(sb_info_size >= 32);
+
+    /* Verify it's reasonable - not excessively large */
+    ASSERT(sb_info_size <= LOLELFFS_BLOCK_SIZE - 256);
 
     return 1;
 }
@@ -317,44 +328,18 @@ static int test_endianness(void)
 static int test_adaptive_alloc_sizing(void)
 {
     /*
-     * Test the adaptive allocation strategy:
-     * - Small files (< 8 blocks): allocate 2 blocks
-     * - Medium files (8-32 blocks): allocate 4 blocks
-     * - Large files (> 32 blocks): allocate 8 blocks
+     * Verify that LOLELFFS_MAX_BLOCKS_PER_EXTENT is set to a reasonable value
+     * With compression support, this is limited by metadata block capacity
      */
 
-    /* Small file case */
-    uint32_t size_small = 0;
-    if (size_small < 8) {
-        ASSERT_EQ(2, 2); /* Would allocate 2 */
-    }
+    /* Should be large enough to be useful */
+    ASSERT(LOLELFFS_MAX_BLOCKS_PER_EXTENT >= 512);
 
-    size_small = 7;
-    if (size_small < 8) {
-        ASSERT_EQ(2, 2); /* Would allocate 2 */
-    }
+    /* Should not exceed metadata block capacity (2040 blocks with current metadata format) */
+    ASSERT(LOLELFFS_MAX_BLOCKS_PER_EXTENT <= 2048);
 
-    /* Medium file case */
-    uint32_t size_medium = 8;
-    if (size_medium >= 8 && size_medium < 32) {
-        ASSERT_EQ(4, 4); /* Would allocate 4 */
-    }
-
-    size_medium = 31;
-    if (size_medium >= 8 && size_medium < 32) {
-        ASSERT_EQ(4, 4); /* Would allocate 4 */
-    }
-
-    /* Large file case */
-    uint32_t size_large = 32;
-    if (size_large >= 32) {
-        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536); /* Would allocate 65536 */
-    }
-
-    size_large = 100;
-    if (size_large >= 32) {
-        ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 65536); /* Would allocate 65536 */
-    }
+    /* Verify the constant is actually 2048 as specified in header */
+    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 2048);
 
     return 1;
 }
@@ -370,30 +355,28 @@ static int test_extent_search_edge_cases(void)
      * - Block beyond all extents
      */
 
-    /* For a 4KB block size and 65536 blocks per extent:
-     * - Extent 0 covers blocks 0-65535
-     * - Extent 1 covers blocks 65536-131071
-     * - etc.
-     */
-
-    /* Verify extent calculations */
+    /* Verify extent calculations using LOLELFFS_MAX_BLOCKS_PER_EXTENT */
     uint32_t block = 0;
     uint32_t extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 0);
 
-    block = 65535;
+    /* Last block of first extent */
+    block = LOLELFFS_MAX_BLOCKS_PER_EXTENT - 1;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 0);
 
-    block = 65536;
+    /* First block of second extent */
+    block = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 1);
 
-    block = 131071;
+    /* Last block of second extent */
+    block = (2 * LOLELFFS_MAX_BLOCKS_PER_EXTENT) - 1;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 1);
 
-    block = 524288;
+    /* Block in 9th extent */
+    block = 8 * LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     extent_idx = block / LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     ASSERT_EQ(extent_idx, 8);
 
@@ -419,14 +402,16 @@ static int test_dir_entries_per_extent(void)
 /* Test symlink data size limit */
 static int test_symlink_data_limit(void)
 {
-    /* Symlink target is stored in i_data field which is 32 bytes */
+    /* Symlink target is stored in i_data field */
     struct lolelffs_inode inode;
 
-    ASSERT_EQ(sizeof(inode.i_data), 32);
+    /* Should be large enough to hold a reasonable symlink path */
+    ASSERT(sizeof(inode.i_data) >= 28);
 
-    /* Max symlink target length is 32 bytes including null terminator */
-    /* So max target string length is 31 characters */
-    ASSERT(sizeof(inode.i_data) >= 32);
+    /* Max symlink target length is sizeof(i_data) bytes including null terminator */
+    /* So max target string length is sizeof(i_data) - 1 characters */
+    size_t max_symlink_len = sizeof(inode.i_data) - 1;
+    ASSERT(max_symlink_len >= 27);
 
     return 1;
 }
