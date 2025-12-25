@@ -32,7 +32,7 @@ impl LolelfFs {
         let ei = self.read_extent_index(&inode)?;
         let mut data = Vec::with_capacity(inode.i_size as usize);
 
-        let num_blocks = (inode.i_size + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+        let num_blocks = inode.i_size.div_ceil(LOLELFFS_BLOCK_SIZE);
 
         for logical_block in 0..num_blocks {
             if let Some(extent) = ei.find_extent(logical_block) {
@@ -134,7 +134,7 @@ impl LolelfFs {
         }
 
         // Calculate needed blocks
-        let num_blocks = (data.len() as u32 + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+        let num_blocks = (data.len() as u32).div_ceil(LOLELFFS_BLOCK_SIZE);
 
         // Allocate blocks using extents
         let mut extents = Vec::new();
@@ -155,7 +155,7 @@ impl LolelfFs {
                 ee_len: extent_size,
                 ee_start: start_block,
                 ee_comp_algo: LOLELFFS_COMP_NONE as u16,
-                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_enc_algo: LOLELFFS_ENC_NONE,
                 ee_reserved: 0,
                 ee_flags: 0,
                 ee_reserved2: 0,
@@ -189,7 +189,9 @@ impl LolelfFs {
             let logical_block = idx as u32;
 
             if let Some((extent_idx, extent)) = ei.extents.iter().enumerate().find(|(_i, e)| {
-                logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len && !e.is_empty()
+                logical_block >= e.ee_block
+                    && logical_block < e.ee_block + e.ee_len
+                    && !e.is_empty()
             }) {
                 if let Some(phys_block) = extent.get_physical(logical_block) {
                     // Prepare block data (pad to full block size)
@@ -218,7 +220,9 @@ impl LolelfFs {
                     };
 
                     // Step 2: Encrypt if enabled (compress-then-encrypt)
-                    let (final_block, used_enc_algo) = if enc_enabled && enc_algo != LOLELFFS_ENC_NONE {
+                    let (final_block, used_enc_algo) = if enc_enabled
+                        && enc_algo != LOLELFFS_ENC_NONE
+                    {
                         // Check if filesystem is unlocked
                         if !self.enc_unlocked {
                             bail!("Cannot write encrypted data: filesystem is locked");
@@ -411,7 +415,7 @@ impl LolelfFs {
             i_mtime: now,
             i_blocks: 0,
             i_nlink: 1,
-            ei_block: 0, // Symlinks don't need extent index
+            ei_block: 0,    // Symlinks don't need extent index
             xattr_block: 0, // No xattrs initially
             i_data,
         };

@@ -111,8 +111,8 @@ impl LolelfFs {
         file.read_exact(&mut enc_master_key)?;
         let enc_features = file.read_u32::<LittleEndian>()?;
         let mut reserved = [0u32; 3];
-        for i in 0..3 {
-            reserved[i] = file.read_u32::<LittleEndian>()?;
+        for item in &mut reserved {
+            *item = file.read_u32::<LittleEndian>()?;
         }
 
         Ok(Superblock {
@@ -385,30 +385,50 @@ impl LolelfFs {
         // Calculate filesystem layout
         let nr_inodes = ((nr_blocks / LOLELFFS_INODES_PER_BLOCK) + 1) * LOLELFFS_INODES_PER_BLOCK;
         let nr_istore_blocks = nr_inodes / LOLELFFS_INODES_PER_BLOCK;
-        let nr_ifree_blocks = (nr_inodes + LOLELFFS_BITS_PER_BLOCK - 1) / LOLELFFS_BITS_PER_BLOCK;
-        let nr_bfree_blocks = (nr_blocks + LOLELFFS_BITS_PER_BLOCK - 1) / LOLELFFS_BITS_PER_BLOCK;
+        let nr_ifree_blocks = nr_inodes.div_ceil(LOLELFFS_BITS_PER_BLOCK);
+        let nr_bfree_blocks = nr_blocks.div_ceil(LOLELFFS_BITS_PER_BLOCK);
 
         // Handle encryption configuration
-        let (enc_enabled, enc_algo, enc_kdf_algo, enc_kdf_iterations, enc_salt, enc_master_key, master_key_plain) =
-            if let Some((password, algo, iterations)) = enc_config {
-                // Generate random salt and master key
-                let salt = crate::encrypt::generate_salt();
-                let master_key = crate::encrypt::generate_master_key();
+        let (
+            enc_enabled,
+            enc_algo,
+            enc_kdf_algo,
+            enc_kdf_iterations,
+            enc_salt,
+            enc_master_key,
+            master_key_plain,
+        ) = if let Some((password, algo, iterations)) = enc_config {
+            // Generate random salt and master key
+            let salt = crate::encrypt::generate_salt();
+            let master_key = crate::encrypt::generate_master_key();
 
-                // Derive user key from password
-                let user_key = crate::encrypt::derive_key_pbkdf2(
-                    password.as_bytes(),
-                    &salt,
-                    iterations,
-                );
+            // Derive user key from password
+            let user_key =
+                crate::encrypt::derive_key_pbkdf2(password.as_bytes(), &salt, iterations);
 
-                // Encrypt master key
-                let encrypted_master_key = crate::encrypt::encrypt_master_key(&master_key, &user_key)?;
+            // Encrypt master key
+            let encrypted_master_key = crate::encrypt::encrypt_master_key(&master_key, &user_key)?;
 
-                (1, algo as u32, LOLELFFS_KDF_PBKDF2 as u32, iterations, salt, encrypted_master_key, master_key)
-            } else {
-                (0, LOLELFFS_ENC_NONE as u32, LOLELFFS_KDF_ARGON2ID as u32, 3, [0; 32], [0; 32], [0; 32])
-            };
+            (
+                1,
+                algo as u32,
+                LOLELFFS_KDF_PBKDF2 as u32,
+                iterations,
+                salt,
+                encrypted_master_key,
+                master_key,
+            )
+        } else {
+            (
+                0,
+                LOLELFFS_ENC_NONE as u32,
+                LOLELFFS_KDF_ARGON2ID as u32,
+                3,
+                [0; 32],
+                [0; 32],
+                [0; 32],
+            )
+        };
 
         // Create superblock
         let superblock = Superblock {
@@ -422,16 +442,16 @@ impl LolelfFs {
             nr_free_blocks: 0,             // Will be calculated
             version: LOLELFFS_VERSION,
             comp_default_algo: LOLELFFS_COMP_LZ4 as u32,
-            comp_enabled: 1,  // Compression enabled by default
+            comp_enabled: 1, // Compression enabled by default
             comp_min_block_size: 128,
             comp_features: 0,
-            max_extent_blocks: LOLELFFS_MAX_BLOCKS_PER_EXTENT as u32,
+            max_extent_blocks: LOLELFFS_MAX_BLOCKS_PER_EXTENT,
             enc_enabled,
             enc_default_algo: enc_algo,
             enc_kdf_algo,
             enc_kdf_iterations,
             enc_kdf_memory: 65536,  // Not used for PBKDF2
-            enc_kdf_parallelism: 4,  // Not used for PBKDF2
+            enc_kdf_parallelism: 4, // Not used for PBKDF2
             enc_salt,
             enc_master_key,
             enc_features: 0,
@@ -441,7 +461,7 @@ impl LolelfFs {
         let mut fs = LolelfFs {
             file,
             superblock,
-            enc_unlocked: enc_enabled != 0,  // If encrypted, start unlocked
+            enc_unlocked: enc_enabled != 0, // If encrypted, start unlocked
             enc_master_key: master_key_plain,
         };
 
@@ -468,10 +488,7 @@ impl LolelfFs {
             if i == 0 {
                 self.write_block(ifree_start + i, &ifree_block)?;
             } else {
-                self.write_block(
-                    ifree_start + i,
-                    &vec![0xFFu8; LOLELFFS_BLOCK_SIZE as usize],
-                )?;
+                self.write_block(ifree_start + i, &vec![0xFFu8; LOLELFFS_BLOCK_SIZE as usize])?;
             }
         }
 
@@ -613,7 +630,7 @@ impl LolelfFs {
         }
 
         // Calculate number of blocks needed
-        let num_blocks = (data.len() as u32 + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+        let num_blocks = (data.len() as u32).div_ceil(LOLELFFS_BLOCK_SIZE);
 
         // Allocate blocks using extents
         let mut extents = Vec::new();
@@ -633,7 +650,7 @@ impl LolelfFs {
                 ee_len: extent_size,
                 ee_start: start_block,
                 ee_comp_algo: LOLELFFS_COMP_NONE as u16,
-                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_enc_algo: LOLELFFS_ENC_NONE,
                 ee_reserved: 0,
                 ee_flags: 0,
                 ee_reserved2: 0,
@@ -661,7 +678,9 @@ impl LolelfFs {
             let logical_block = idx as u32;
 
             if let Some(extent) = index.extents.iter().find(|e| {
-                !e.is_empty() && logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len
+                !e.is_empty()
+                    && logical_block >= e.ee_block
+                    && logical_block < e.ee_block + e.ee_len
             }) {
                 let phys_block = extent.ee_start + (logical_block - extent.ee_block);
                 let mut block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
@@ -745,7 +764,7 @@ impl LolelfFs {
         } else {
             // Serialize remaining entries and write them back
             let data = crate::xattr::serialize_xattr_entries(&entries)?;
-            let num_blocks = (data.len() as u32 + LOLELFFS_BLOCK_SIZE - 1) / LOLELFFS_BLOCK_SIZE;
+            let num_blocks = (data.len() as u32).div_ceil(LOLELFFS_BLOCK_SIZE);
 
             // Allocate blocks using extents
             let mut extents = Vec::new();
@@ -765,7 +784,7 @@ impl LolelfFs {
                     ee_len: extent_size,
                     ee_start: start_block,
                     ee_comp_algo: LOLELFFS_COMP_NONE as u16,
-                    ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                    ee_enc_algo: LOLELFFS_ENC_NONE,
                     ee_reserved: 0,
                     ee_flags: 0,
                     ee_reserved2: 0,
@@ -793,7 +812,9 @@ impl LolelfFs {
                 let logical_block = idx as u32;
 
                 if let Some(extent) = new_index.extents.iter().find(|e| {
-                    !e.is_empty() && logical_block >= e.ee_block && logical_block < e.ee_block + e.ee_len
+                    !e.is_empty()
+                        && logical_block >= e.ee_block
+                        && logical_block < e.ee_block + e.ee_len
                 }) {
                     let phys_block = extent.ee_start + (logical_block - extent.ee_block);
                     let mut block = vec![0u8; LOLELFFS_BLOCK_SIZE as usize];
@@ -870,10 +891,8 @@ impl LolelfFs {
         );
 
         // Decrypt master key
-        let master_key = crate::encrypt::decrypt_master_key(
-            &self.superblock.enc_master_key,
-            &user_key,
-        )?;
+        let master_key =
+            crate::encrypt::decrypt_master_key(&self.superblock.enc_master_key, &user_key)?;
 
         // Store the decrypted master key
         self.enc_master_key = master_key;

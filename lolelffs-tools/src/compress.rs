@@ -163,7 +163,8 @@ mod tests {
         let compressed = compress_block(LOLELFFS_COMP_ZLIB, &data).unwrap();
 
         if let Some(comp_data) = compressed {
-            let decompressed = decompress_block(LOLELFFS_COMP_ZLIB, &comp_data, data.len()).unwrap();
+            let decompressed =
+                decompress_block(LOLELFFS_COMP_ZLIB, &comp_data, data.len()).unwrap();
             assert_eq!(data, decompressed);
         }
     }
@@ -174,7 +175,8 @@ mod tests {
         let compressed = compress_block(LOLELFFS_COMP_ZSTD, &data).unwrap();
 
         if let Some(comp_data) = compressed {
-            let decompressed = decompress_block(LOLELFFS_COMP_ZSTD, &comp_data, data.len()).unwrap();
+            let decompressed =
+                decompress_block(LOLELFFS_COMP_ZSTD, &comp_data, data.len()).unwrap();
             assert_eq!(data, decompressed);
         }
     }

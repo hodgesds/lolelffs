@@ -43,7 +43,7 @@ pub fn encrypt_aes_xts(key: &[u8; 32], block_num: u64, plaintext: &[u8]) -> Resu
         &mut ciphertext,
         LOLELFFS_BLOCK_SIZE as usize,
         tweak,
-        |t: u128| (t + 1).to_le_bytes()
+        |t: u128| (t + 1).to_le_bytes(),
     );
 
     Ok(ciphertext)
@@ -77,14 +77,18 @@ pub fn decrypt_aes_xts(key: &[u8; 32], block_num: u64, ciphertext: &[u8]) -> Res
         &mut plaintext,
         LOLELFFS_BLOCK_SIZE as usize,
         tweak,
-        |t: u128| (t + 1).to_le_bytes()
+        |t: u128| (t + 1).to_le_bytes(),
     );
 
     Ok(plaintext)
 }
 
 /// Encrypt a block using ChaCha20-Poly1305
-pub fn encrypt_chacha20_poly1305(key: &[u8; 32], block_num: u64, plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn encrypt_chacha20_poly1305(
+    key: &[u8; 32],
+    block_num: u64,
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     if plaintext.len() != LOLELFFS_BLOCK_SIZE as usize {
         bail!("Plaintext must be exactly {} bytes", LOLELFFS_BLOCK_SIZE);
     }
@@ -106,7 +110,11 @@ pub fn encrypt_chacha20_poly1305(key: &[u8; 32], block_num: u64, plaintext: &[u8
 }
 
 /// Decrypt a block using ChaCha20-Poly1305
-pub fn decrypt_chacha20_poly1305(key: &[u8; 32], block_num: u64, ciphertext: &[u8]) -> Result<Vec<u8>> {
+pub fn decrypt_chacha20_poly1305(
+    key: &[u8; 32],
+    block_num: u64,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
     // Ciphertext includes 16-byte authentication tag
     if ciphertext.len() != LOLELFFS_BLOCK_SIZE as usize + 16 {
         bail!(
@@ -124,15 +132,20 @@ pub fn decrypt_chacha20_poly1305(key: &[u8; 32], block_num: u64, ciphertext: &[u
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Decrypt with authentication verification
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| anyhow::anyhow!("ChaCha20-Poly1305 decryption failed (authentication failed)"))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        anyhow::anyhow!("ChaCha20-Poly1305 decryption failed (authentication failed)")
+    })?;
 
     Ok(plaintext)
 }
 
 /// Encrypt a block using the specified algorithm
-pub fn encrypt_block(algo: u8, key: &[u8; 32], block_num: u64, plaintext: &[u8]) -> Result<Vec<u8>> {
+pub fn encrypt_block(
+    algo: u8,
+    key: &[u8; 32],
+    block_num: u64,
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
     match algo {
         LOLELFFS_ENC_NONE => bail!("Cannot encrypt with NONE algorithm"),
         LOLELFFS_ENC_AES256_XTS => encrypt_aes_xts(key, block_num, plaintext),
@@ -142,7 +155,12 @@ pub fn encrypt_block(algo: u8, key: &[u8; 32], block_num: u64, plaintext: &[u8])
 }
 
 /// Decrypt a block using the specified algorithm
-pub fn decrypt_block(algo: u8, key: &[u8; 32], block_num: u64, ciphertext: &[u8]) -> Result<Vec<u8>> {
+pub fn decrypt_block(
+    algo: u8,
+    key: &[u8; 32],
+    block_num: u64,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>> {
     match algo {
         LOLELFFS_ENC_NONE => bail!("Cannot decrypt with NONE algorithm"),
         LOLELFFS_ENC_AES256_XTS => decrypt_aes_xts(key, block_num, ciphertext),

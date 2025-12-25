@@ -306,7 +306,11 @@ fn main() -> Result<()> {
             long,
             all,
         } => cmd_ls(&image, &path, long, all),
-        Commands::Cat { image, path, password } => cmd_cat(&image, &path, password),
+        Commands::Cat {
+            image,
+            path,
+            password,
+        } => cmd_cat(&image, &path, password),
         Commands::Write {
             image,
             path,
@@ -327,9 +331,14 @@ fn main() -> Result<()> {
         } => cmd_rm(&image, &path, recursive, dir),
         Commands::Touch { image, path } => cmd_touch(&image, &path),
         Commands::Stat { image, path } => cmd_stat(&image, &path),
-        Commands::Mkfs { image, size, encrypt, password, algo, iterations } => {
-            cmd_mkfs(&image, size, encrypt, password, &algo, iterations)
-        },
+        Commands::Mkfs {
+            image,
+            size,
+            encrypt,
+            password,
+            algo,
+            iterations,
+        } => cmd_mkfs(&image, size, encrypt, password, &algo, iterations),
         Commands::Fsck { image, verbose } => cmd_fsck(&image, verbose),
         Commands::Df { image, human } => cmd_df(&image, human),
         Commands::Ln {
@@ -440,7 +449,13 @@ fn cmd_cat(image: &PathBuf, path: &str, password: Option<String>) -> Result<()> 
     Ok(())
 }
 
-fn cmd_write(image: &PathBuf, path: &str, data: Option<String>, create: bool, password: Option<String>) -> Result<()> {
+fn cmd_write(
+    image: &PathBuf,
+    path: &str,
+    data: Option<String>,
+    create: bool,
+    password: Option<String>,
+) -> Result<()> {
     let mut fs = LolelfFs::open(image)?;
 
     // Unlock if encrypted and password provided
@@ -585,7 +600,10 @@ fn cmd_stat(image: &PathBuf, path: &str) -> Result<()> {
     };
 
     println!("  File: {}", path);
-    println!("  Size: {:<15} Blocks: {:<10} {}", inode.i_size, inode.i_blocks, file_type);
+    println!(
+        "  Size: {:<15} Blocks: {:<10} {}",
+        inode.i_size, inode.i_blocks, file_type
+    );
     println!("Inode: {:<15} Links: {}", inode_num, inode.i_nlink);
     println!(
         " Mode: {:o}/{}{:<9} Uid: {:5} Gid: {:5}",
@@ -633,8 +651,12 @@ fn cmd_mkfs(
         Some(s) => parse_size(&s)?,
         None => {
             // Check if file exists and use its size
-            let meta = std::fs::metadata(image)
-                .with_context(|| format!("Cannot stat '{}', specify --size to create", image.display()))?;
+            let meta = std::fs::metadata(image).with_context(|| {
+                format!(
+                    "Cannot stat '{}', specify --size to create",
+                    image.display()
+                )
+            })?;
             meta.len()
         }
     };
@@ -763,7 +785,10 @@ fn cmd_fsck(image: &PathBuf, verbose: bool) -> Result<()> {
                         }
                     }
                     Err(e) => {
-                        println!("ERROR: Cannot read inode {} for '{}': {}", entry.inode_num, entry.filename, e);
+                        println!(
+                            "ERROR: Cannot read inode {} for '{}': {}",
+                            entry.inode_num, entry.filename, e
+                        );
                         errors += 1;
                     }
                 }
@@ -777,7 +802,10 @@ fn cmd_fsck(image: &PathBuf, verbose: bool) -> Result<()> {
 
     println!();
     if errors > 0 {
-        println!("Filesystem check FAILED: {} errors, {} warnings", errors, warnings);
+        println!(
+            "Filesystem check FAILED: {} errors, {} warnings",
+            errors, warnings
+        );
         std::process::exit(1);
     } else if warnings > 0 {
         println!("Filesystem check completed with {} warnings", warnings);
@@ -800,8 +828,7 @@ fn cmd_df(image: &PathBuf, human: bool) -> Result<()> {
     };
 
     if human {
-        println!(
-            "Filesystem      Size  Used Avail Use%");
+        println!("Filesystem      Size  Used Avail Use%");
         println!(
             "{:<15} {:>5} {:>5} {:>5} {:>3}%",
             image.display(),
@@ -823,7 +850,10 @@ fn cmd_df(image: &PathBuf, human: bool) -> Result<()> {
     }
 
     println!();
-    println!("Inodes: {} total, {} free", stats.total_inodes, stats.free_inodes);
+    println!(
+        "Inodes: {} total, {} free",
+        stats.total_inodes, stats.free_inodes
+    );
 
     Ok(())
 }
@@ -859,10 +889,26 @@ fn cmd_super(image: &PathBuf) -> Result<()> {
     println!();
     println!("Layout:");
     println!("  Block 0: Superblock");
-    println!("  Blocks {}-{}: Inode store", sb.inode_store_start(), sb.ifree_bitmap_start() - 1);
-    println!("  Blocks {}-{}: Inode free bitmap", sb.ifree_bitmap_start(), sb.bfree_bitmap_start() - 1);
-    println!("  Blocks {}-{}: Block free bitmap", sb.bfree_bitmap_start(), sb.data_block_start() - 1);
-    println!("  Blocks {}-{}: Data blocks", sb.data_block_start(), sb.nr_blocks - 1);
+    println!(
+        "  Blocks {}-{}: Inode store",
+        sb.inode_store_start(),
+        sb.ifree_bitmap_start() - 1
+    );
+    println!(
+        "  Blocks {}-{}: Inode free bitmap",
+        sb.ifree_bitmap_start(),
+        sb.bfree_bitmap_start() - 1
+    );
+    println!(
+        "  Blocks {}-{}: Block free bitmap",
+        sb.bfree_bitmap_start(),
+        sb.data_block_start() - 1
+    );
+    println!(
+        "  Blocks {}-{}: Data blocks",
+        sb.data_block_start(),
+        sb.nr_blocks - 1
+    );
 
     Ok(())
 }
@@ -898,8 +944,10 @@ fn cmd_unlock(image: &PathBuf, password: Option<String>) -> Result<()> {
     fs.unlock(&pwd)?;
 
     println!("Filesystem unlocked successfully");
-    println!("  Encryption algorithm: {}",
-        crate::encrypt::get_algo_name(fs.superblock.enc_default_algo as u8));
+    println!(
+        "  Encryption algorithm: {}",
+        crate::encrypt::get_algo_name(fs.superblock.enc_default_algo as u8)
+    );
 
     Ok(())
 }
@@ -911,8 +959,8 @@ fn cmd_cp(image: &PathBuf, source: &PathBuf, dest: &str, password: Option<String
     unlock_if_needed(&mut fs, password)?;
 
     // Read source file from host
-    let content = std::fs::read(source)
-        .with_context(|| format!("Failed to read '{}'", source.display()))?;
+    let content =
+        std::fs::read(source).with_context(|| format!("Failed to read '{}'", source.display()))?;
 
     // Determine destination path
     let dest_path = if dest.ends_with('/') {
@@ -947,8 +995,7 @@ fn cmd_extract(image: &PathBuf, source: &str, dest: &PathBuf) -> Result<()> {
     let inode_num = fs.resolve_path(source)?;
     let data = fs.read_file(inode_num)?;
 
-    std::fs::write(dest, &data)
-        .with_context(|| format!("Failed to write '{}'", dest.display()))?;
+    std::fs::write(dest, &data).with_context(|| format!("Failed to write '{}'", dest.display()))?;
 
     Ok(())
 }
@@ -1028,7 +1075,7 @@ fn cmd_removexattr(image: &PathBuf, path: &str, name: &str) -> Result<()> {
 fn split_path(path: &str) -> (String, &str) {
     let path = path.trim_end_matches('/');
     match path.rfind('/') {
-        Some(idx) if idx == 0 => ("/".to_string(), &path[1..]),
+        Some(0) => ("/".to_string(), &path[1..]),
         Some(idx) => (path[..idx].to_string(), &path[idx + 1..]),
         None => ("/".to_string(), path),
     }
@@ -1068,7 +1115,9 @@ fn parse_size(s: &str) -> Result<u64> {
         (s, 1)
     };
 
-    let num: u64 = num_str.parse().with_context(|| format!("Invalid size: {}", s))?;
+    let num: u64 = num_str
+        .parse()
+        .with_context(|| format!("Invalid size: {}", s))?;
     Ok(num * multiplier)
 }
 

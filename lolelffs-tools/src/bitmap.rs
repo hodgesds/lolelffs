@@ -21,9 +21,8 @@ impl LolelfFs {
                     // Find the first set bit
                     for bit_idx in 0..8 {
                         if block[byte_idx] & (1 << bit_idx) != 0 {
-                            let inode_num = block_idx * LOLELFFS_BITS_PER_BLOCK
-                                + byte_idx as u32 * 8
-                                + bit_idx;
+                            let inode_num =
+                                block_idx * LOLELFFS_BITS_PER_BLOCK + byte_idx as u32 * 8 + bit_idx;
 
                             if inode_num >= self.superblock.nr_inodes {
                                 continue;
@@ -119,10 +118,7 @@ impl LolelfFs {
         }
 
         if consecutive < count {
-            bail!(
-                "Could not find {} consecutive free blocks",
-                count
-            );
+            bail!("Could not find {} consecutive free blocks", count);
         }
 
         let start = start_block.unwrap();

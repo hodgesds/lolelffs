@@ -15,7 +15,10 @@ pub fn parse_xattr_name(name: &str) -> Result<(XattrNamespace, String)> {
     } else if let Some(base) = name.strip_prefix("security.") {
         Ok((XattrNamespace::Security, base.to_string()))
     } else {
-        bail!("Invalid xattr name '{}': must start with user., trusted., system., or security.", name);
+        bail!(
+            "Invalid xattr name '{}': must start with user., trusted., system., or security.",
+            name
+        );
     }
 }
 
@@ -52,20 +55,11 @@ pub fn read_xattr_index(fs: &mut LolelfFs, block_num: u32) -> Result<XattrIndex>
             block[offset + 10],
             block[offset + 11],
         ]);
-        let ee_comp_algo = u16::from_le_bytes([
-            block[offset + 12],
-            block[offset + 13],
-        ]);
+        let ee_comp_algo = u16::from_le_bytes([block[offset + 12], block[offset + 13]]);
         let ee_enc_algo = block[offset + 14];
         let ee_reserved = block[offset + 15];
-        let ee_flags = u16::from_le_bytes([
-            block[offset + 16],
-            block[offset + 17],
-        ]);
-        let ee_reserved2 = u16::from_le_bytes([
-            block[offset + 18],
-            block[offset + 19],
-        ]);
+        let ee_flags = u16::from_le_bytes([block[offset + 16], block[offset + 17]]);
+        let ee_reserved2 = u16::from_le_bytes([block[offset + 18], block[offset + 19]]);
         let ee_meta = u32::from_le_bytes([
             block[offset + 20],
             block[offset + 21],

@@ -25,29 +25,29 @@ pub const LOLELFFS_MAX_FILENAME: usize = 255;
 pub const LOLELFFS_VERSION: u32 = 1;
 
 /// Compression algorithm IDs
-pub const LOLELFFS_COMP_NONE: u8 = 0;   // No compression
-pub const LOLELFFS_COMP_LZ4: u8 = 1;    // LZ4 (fast, good ratio)
-pub const LOLELFFS_COMP_ZLIB: u8 = 2;   // zlib/deflate (moderate speed, better ratio)
-pub const LOLELFFS_COMP_ZSTD: u8 = 3;   // zstd (configurable, best ratio)
+pub const LOLELFFS_COMP_NONE: u8 = 0; // No compression
+pub const LOLELFFS_COMP_LZ4: u8 = 1; // LZ4 (fast, good ratio)
+pub const LOLELFFS_COMP_ZLIB: u8 = 2; // zlib/deflate (moderate speed, better ratio)
+pub const LOLELFFS_COMP_ZSTD: u8 = 3; // zstd (configurable, best ratio)
 
 /// Encryption algorithm IDs
-pub const LOLELFFS_ENC_NONE: u8 = 0;           // No encryption
-pub const LOLELFFS_ENC_AES256_XTS: u8 = 1;     // AES-256-XTS (block device encryption)
-pub const LOLELFFS_ENC_CHACHA20_POLY: u8 = 2;  // ChaCha20-Poly1305 (authenticated encryption)
+pub const LOLELFFS_ENC_NONE: u8 = 0; // No encryption
+pub const LOLELFFS_ENC_AES256_XTS: u8 = 1; // AES-256-XTS (block device encryption)
+pub const LOLELFFS_ENC_CHACHA20_POLY: u8 = 2; // ChaCha20-Poly1305 (authenticated encryption)
 
 /// Key derivation function IDs
-pub const LOLELFFS_KDF_NONE: u8 = 0;      // No KDF
-pub const LOLELFFS_KDF_ARGON2ID: u8 = 1;  // Argon2id (recommended)
-pub const LOLELFFS_KDF_PBKDF2: u8 = 2;    // PBKDF2-HMAC-SHA256
+pub const LOLELFFS_KDF_NONE: u8 = 0; // No KDF
+pub const LOLELFFS_KDF_ARGON2ID: u8 = 1; // Argon2id (recommended)
+pub const LOLELFFS_KDF_PBKDF2: u8 = 2; // PBKDF2-HMAC-SHA256
 
 /// Compression metadata magic
 pub const LOLELFFS_COMP_META_MAGIC: u32 = 0xC04FFEE5;
 
 /// Extent flags
-pub const LOLELFFS_EXT_COMPRESSED: u16 = 0x0001;  // Extent contains compressed blocks
-pub const LOLELFFS_EXT_ENCRYPTED: u16 = 0x0002;   // Extent contains encrypted blocks
-pub const LOLELFFS_EXT_HAS_META: u16 = 0x0004;    // Has per-block metadata
-pub const LOLELFFS_EXT_MIXED: u16 = 0x0008;       // Mixed compressed/uncompressed/encrypted
+pub const LOLELFFS_EXT_COMPRESSED: u16 = 0x0001; // Extent contains compressed blocks
+pub const LOLELFFS_EXT_ENCRYPTED: u16 = 0x0002; // Extent contains encrypted blocks
+pub const LOLELFFS_EXT_HAS_META: u16 = 0x0004; // Has per-block metadata
+pub const LOLELFFS_EXT_MIXED: u16 = 0x0008; // Mixed compressed/uncompressed/encrypted
 
 /// Size of file entry structure
 pub const LOLELFFS_FILE_ENTRY_SIZE: usize = 259;
@@ -66,10 +66,10 @@ pub const LOLELFFS_MIN_BLOCKS: u32 = 100;
 
 /// File mode flags
 pub mod mode {
-    pub const S_IFMT: u32 = 0o170000;   // Type mask
-    pub const S_IFREG: u32 = 0o100000;  // Regular file
-    pub const S_IFDIR: u32 = 0o040000;  // Directory
-    pub const S_IFLNK: u32 = 0o120000;  // Symbolic link
+    pub const S_IFMT: u32 = 0o170000; // Type mask
+    pub const S_IFREG: u32 = 0o100000; // Regular file
+    pub const S_IFDIR: u32 = 0o040000; // Directory
+    pub const S_IFLNK: u32 = 0o120000; // Symbolic link
 }
 
 /// Superblock information structure (on-disk format)
@@ -487,9 +487,7 @@ impl ExtentIndex {
             let mid = left + (right - left) / 2;
             let extent = &self.extents[mid];
 
-            if extent.is_empty() {
-                right = mid;
-            } else if extent.ee_block > logical_block {
+            if extent.is_empty() || extent.ee_block > logical_block {
                 right = mid;
             } else if extent.ee_block + extent.ee_len <= logical_block {
                 left = mid + 1;

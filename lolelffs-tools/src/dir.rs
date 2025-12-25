@@ -137,7 +137,10 @@ impl LolelfFs {
         file_inode_num: u32,
     ) -> Result<()> {
         if filename.len() > LOLELFFS_MAX_FILENAME - 1 {
-            bail!("Filename too long (max {} bytes)", LOLELFFS_MAX_FILENAME - 1);
+            bail!(
+                "Filename too long (max {} bytes)",
+                LOLELFFS_MAX_FILENAME - 1
+            );
         }
 
         let mut dir_inode = self.read_inode(dir_inode_num)?;
@@ -170,11 +173,9 @@ impl LolelfFs {
 
         // Search for empty slot in existing blocks
         for (ext_idx, extent) in ei.extents.iter().enumerate() {
-            if extent.is_empty() {
-                if ext_idx == 0 || ei.extents[ext_idx - 1].is_empty() {
-                    // Need to allocate first block
-                    break;
-                }
+            if extent.is_empty() && (ext_idx == 0 || ei.extents[ext_idx - 1].is_empty()) {
+                // Need to allocate first block
+                break;
             }
 
             for block_offset in 0..extent.ee_len {
@@ -229,7 +230,7 @@ impl LolelfFs {
                 ee_len: 1,
                 ee_start: new_block,
                 ee_comp_algo: LOLELFFS_COMP_NONE as u16,
-                ee_enc_algo: LOLELFFS_ENC_NONE as u8,
+                ee_enc_algo: LOLELFFS_ENC_NONE,
                 ee_reserved: 0,
                 ee_flags: 0,
                 ee_reserved2: 0,
@@ -320,7 +321,8 @@ impl LolelfFs {
             }
         }
 
-        let removed_inode = removed_inode.ok_or_else(|| anyhow::anyhow!("File '{}' not found", filename))?;
+        let removed_inode =
+            removed_inode.ok_or_else(|| anyhow::anyhow!("File '{}' not found", filename))?;
 
         // Update extent index
         ei.nr_files = ei.nr_files.saturating_sub(1);

@@ -147,11 +147,7 @@ fn update_times(inode: &mut Inode, atime: bool, mtime: bool, ctime: bool) {
 }
 
 impl Filesystem for LolelfFuseFs {
-    fn init(
-        &mut self,
-        _req: &Request<'_>,
-        _config: &mut fuser::KernelConfig,
-    ) -> Result<(), c_int> {
+    fn init(&mut self, _req: &Request<'_>, _config: &mut fuser::KernelConfig) -> Result<(), c_int> {
         info!("Initializing lolelffs FUSE filesystem");
         Ok(())
     }
@@ -336,7 +332,9 @@ impl Filesystem for LolelfFuseFs {
                 }
 
                 // Symlink target is stored in i_data
-                let target = inode.i_data.iter()
+                let target = inode
+                    .i_data
+                    .iter()
                     .take_while(|&&b| b != 0)
                     .cloned()
                     .collect::<Vec<u8>>();
@@ -521,7 +519,10 @@ impl Filesystem for LolelfFuseFs {
         link: &std::path::Path,
         reply: ReplyEntry,
     ) {
-        debug!("symlink(parent={}, name={:?}, link={:?})", parent, name, link);
+        debug!(
+            "symlink(parent={}, name={:?}, link={:?})",
+            parent, name, link
+        );
 
         if self.read_only {
             reply.error(libc::EROFS);
@@ -546,19 +547,17 @@ impl Filesystem for LolelfFuseFs {
 
         let mut fs = self.fs.lock().unwrap();
         match fs.symlink(fuse_to_lolelffs_ino(parent), name_str, link_str) {
-            Ok(inode_num) => {
-                match fs.read_inode(inode_num) {
-                    Ok(inode) => {
-                        let attr = inode_to_attr(lolelffs_to_fuse_ino(inode_num), &inode);
-                        let ttl = Duration::from_secs(1);
-                        reply.entry(&ttl, &attr, 0);
-                    }
-                    Err(e) => {
-                        error!("Failed to read newly created symlink: {}", e);
-                        reply.error(map_error(&e));
-                    }
+            Ok(inode_num) => match fs.read_inode(inode_num) {
+                Ok(inode) => {
+                    let attr = inode_to_attr(lolelffs_to_fuse_ino(inode_num), &inode);
+                    let ttl = Duration::from_secs(1);
+                    reply.entry(&ttl, &attr, 0);
                 }
-            }
+                Err(e) => {
+                    error!("Failed to read newly created symlink: {}", e);
+                    reply.error(map_error(&e));
+                }
+            },
             Err(e) => {
                 error!("Failed to create symlink: {}", e);
                 reply.error(map_error(&e));
@@ -574,7 +573,10 @@ impl Filesystem for LolelfFuseFs {
         newname: &OsStr,
         reply: ReplyEntry,
     ) {
-        debug!("link(ino={}, newparent={}, newname={:?})", ino, newparent, newname);
+        debug!(
+            "link(ino={}, newparent={}, newname={:?})",
+            ino, newparent, newname
+        );
 
         if self.read_only {
             reply.error(libc::EROFS);
@@ -590,20 +592,22 @@ impl Filesystem for LolelfFuseFs {
         };
 
         let mut fs = self.fs.lock().unwrap();
-        match fs.link(fuse_to_lolelffs_ino(ino), fuse_to_lolelffs_ino(newparent), name_str) {
-            Ok(()) => {
-                match fs.read_inode(fuse_to_lolelffs_ino(ino)) {
-                    Ok(inode) => {
-                        let attr = inode_to_attr(ino, &inode);
-                        let ttl = Duration::from_secs(1);
-                        reply.entry(&ttl, &attr, 0);
-                    }
-                    Err(e) => {
-                        error!("Failed to read inode after link: {}", e);
-                        reply.error(map_error(&e));
-                    }
+        match fs.link(
+            fuse_to_lolelffs_ino(ino),
+            fuse_to_lolelffs_ino(newparent),
+            name_str,
+        ) {
+            Ok(()) => match fs.read_inode(fuse_to_lolelffs_ino(ino)) {
+                Ok(inode) => {
+                    let attr = inode_to_attr(ino, &inode);
+                    let ttl = Duration::from_secs(1);
+                    reply.entry(&ttl, &attr, 0);
                 }
-            }
+                Err(e) => {
+                    error!("Failed to read inode after link: {}", e);
+                    reply.error(map_error(&e));
+                }
+            },
             Err(e) => {
                 error!("Failed to create hard link: {}", e);
                 reply.error(map_error(&e));
@@ -809,7 +813,14 @@ impl Filesystem for LolelfFuseFs {
         );
     }
 
-    fn getxattr(&mut self, _req: &Request, ino: u64, name: &OsStr, size: u32, reply: fuser::ReplyXattr) {
+    fn getxattr(
+        &mut self,
+        _req: &Request,
+        ino: u64,
+        name: &OsStr,
+        size: u32,
+        reply: fuser::ReplyXattr,
+    ) {
         debug!("getxattr(ino={}, name={:?}, size={})", ino, name, size);
 
         let name_str = match name.to_str() {
@@ -853,7 +864,12 @@ impl Filesystem for LolelfFuseFs {
         _position: u32,
         reply: fuser::ReplyEmpty,
     ) {
-        debug!("setxattr(ino={}, name={:?}, value_len={})", ino, name, value.len());
+        debug!(
+            "setxattr(ino={}, name={:?}, value_len={})",
+            ino,
+            name,
+            value.len()
+        );
 
         if self.read_only {
             reply.error(libc::EROFS);
@@ -973,9 +989,7 @@ fn main() -> Result<()> {
 
     let fuse_fs = LolelfFuseFs::new(fs, args.ro);
 
-    let mut mount_options = vec![
-        MountOption::FSName("lolelffs".to_string()),
-    ];
+    let mut mount_options = vec![MountOption::FSName("lolelffs".to_string())];
 
     if args.ro {
         mount_options.push(MountOption::RO);
