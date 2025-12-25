@@ -29,8 +29,12 @@ jobs:
 
       - name: Build test binaries
         run: |
+          make mkfs.lolelffs
           make test_unit
           make test_mkfs
+
+      - name: Create test directory
+        run: mkdir -p test
 
       - name: Run unit tests
         run: |
@@ -175,53 +179,76 @@ jobs:
 
           echo "Fetching latest kernel version from Ubuntu mainline..."
 
-          # Get list of available versions (stable only, no rc)
+          # Get list of available versions (stable only, no rc), properly deduplicated
           VERSIONS=$(curl -s https://kernel.ubuntu.com/mainline/ | \
             grep -oP 'v\K[0-9]+\.[0-9]+(\.[0-9]+)?' | \
             grep -v 'rc' | \
-            sort -V -r)
+            sort -V -u -r | \
+            head -20)
 
-          echo "Available versions:"
-          echo "$VERSIONS" | head -5
+          echo "Top 20 available versions:"
+          echo "$VERSIONS"
 
           # Try to download kernel headers, falling back to older versions if needed
           SUCCESS=0
-          for LATEST_VERSION in $VERSIONS; do
+          TRIED=0
+          MAX_TRIES=10
+
+          for VER in $VERSIONS; do
+            # Limit number of attempts
+            if [ $TRIED -ge $MAX_TRIES ]; then
+              echo "Reached maximum retry limit ($MAX_TRIES), stopping..."
+              break
+            fi
+            TRIED=$((TRIED + 1))
+
             echo ""
-            echo "Trying kernel version: ${LATEST_VERSION}"
+            echo "[$TRIED/$MAX_TRIES] Trying kernel version: ${VER}"
 
-            # Convert version to build number (e.g., 6.13.1 -> 060131)
-            MAJOR=$(echo $LATEST_VERSION | cut -d. -f1)
-            MINOR=$(echo $LATEST_VERSION | cut -d. -f2)
-            PATCH=$(echo $LATEST_VERSION | cut -d. -f3)
-            [ -z "$PATCH" ] && PATCH=0
+            # Parse version components
+            MAJOR=$(echo $VER | cut -d. -f1)
+            MINOR=$(echo $VER | cut -d. -f2)
+            PATCH=$(echo $VER | cut -d. -f3)
+
+            # Ubuntu kernel packages always use X.Y.Z format
+            # If patch is missing, add .0
+            if [ -z "$PATCH" ]; then
+              FULL_VERSION="${MAJOR}.${MINOR}.0"
+              PATCH=0
+            else
+              FULL_VERSION="${VER}"
+            fi
+
             KERNEL_BUILD=$(printf "%02d%02d%02d" $MAJOR $MINOR $PATCH)
+            BASE_URL="https://kernel.ubuntu.com/mainline/v${VER}/amd64"
 
-            BASE_URL="https://kernel.ubuntu.com/mainline/v${LATEST_VERSION}/amd64"
+            # Try the full version format (6.18.0-061800)
+            HEADER_ALL="${BASE_URL}/linux-headers-${FULL_VERSION}-${KERNEL_BUILD}_${FULL_VERSION}-${KERNEL_BUILD}.1_all.deb"
+            HEADER_GENERIC="${BASE_URL}/linux-headers-${FULL_VERSION}-${KERNEL_BUILD}-generic_${FULL_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb"
 
-            # Check if the files exist before downloading
-            if wget --spider "${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb" 2>/dev/null; then
-              echo "Found kernel headers for ${LATEST_VERSION}"
+            # Quick check with timeout
+            if timeout 5 wget --spider -q "${HEADER_ALL}" 2>/dev/null; then
+              echo "✓ Found kernel headers for ${FULL_VERSION}"
 
               # Download kernel headers
-              wget -q ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb
-              wget -q ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}-generic_${LATEST_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb
+              wget -q "${HEADER_ALL}"
+              wget -q "${HEADER_GENERIC}"
 
               # Install headers
               sudo dpkg -i linux-headers-*.deb || true
               sudo apt-get install -f -y
 
-              echo "Successfully installed kernel headers for ${LATEST_VERSION}"
-              echo "KERNEL_DIR=${LATEST_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
+              echo "Successfully installed kernel headers for ${FULL_VERSION}"
+              echo "KERNEL_DIR=${FULL_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
               SUCCESS=1
               break
             else
-              echo "Kernel headers not available for ${LATEST_VERSION}, trying next version..."
+              echo "✗ Kernel headers not available for ${FULL_VERSION}"
             fi
           done
 
           if [ $SUCCESS -eq 0 ]; then
-            echo "ERROR: Could not find any available kernel headers"
+            echo "ERROR: Could not find any available kernel headers in the top $MAX_TRIES versions"
             exit 1
           fi
 
