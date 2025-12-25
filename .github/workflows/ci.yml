@@ -1,0 +1,359 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM UTC
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libelf-dev
+
+      - name: Build test binaries
+        run: |
+          make test_unit
+          make test_mkfs
+
+      - name: Run unit tests
+        run: |
+          ./test_unit
+          ./test_mkfs
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-failures
+          path: |
+            test_unit
+            test_mkfs
+
+  rust-tests:
+    name: Rust Tools Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lolelffs-tools/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('lolelffs-tools/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run Rust tests
+        run: |
+          cd lolelffs-tools
+          cargo test --workspace --verbose
+
+      - name: Run clippy
+        run: |
+          cd lolelffs-tools
+          cargo clippy --workspace -- -D warnings
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-test-failures
+          path: lolelffs-tools/target/debug
+
+  fuse-tests:
+    name: FUSE Driver Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lolelffs-tools/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('lolelffs-tools/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install FUSE dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 libfuse3-dev
+
+      - name: Build FUSE driver
+        run: make fuse
+
+      - name: Create test image
+        run: |
+          sudo apt-get install -y libelf-dev
+          make test-image
+
+      - name: Run FUSE tests
+        run: ./tests/test_fuse.sh
+
+      - name: Upload FUSE logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuse-test-logs
+          path: |
+            fuse.log
+            test.img
+
+  build-verification:
+    name: Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            lolelffs-tools/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('lolelffs-tools/**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libelf-dev linux-headers-$(uname -r)
+
+      - name: Build all components
+        run: make all
+
+      - name: Verify binaries exist
+        run: |
+          test -f lolelffs.ko
+          test -f mkfs.lolelffs
+          test -f fsck.lolelffs
+          test -f unlock_lolelffs
+          test -f lolelffs
+          echo "All binaries built successfully"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            lolelffs.ko
+            mkfs.lolelffs
+            fsck.lolelffs
+            unlock_lolelffs
+            lolelffs
+
+  kernel-tests:
+    name: Kernel Module Tests (VNG)
+    runs-on: ubuntu-latest-4-cores
+    needs: build-verification
+    continue-on-error: true  # Don't block PRs if KVM unavailable
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Make artifacts executable
+        run: |
+          chmod +x mkfs.lolelffs fsck.lolelffs unlock_lolelffs lolelffs
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 python3-pip build-essential libelf-dev linux-headers-$(uname -r)
+
+      - name: Install virtme-ng
+        run: |
+          pip3 install --user virtme-ng
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Verify KVM availability
+        id: kvm-check
+        run: |
+          if [ -w /dev/kvm ]; then
+            echo "KVM is available"
+            echo "kvm_available=true" >> $GITHUB_OUTPUT
+          else
+            echo "KVM not available, kernel tests will be skipped"
+            echo "kvm_available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create test image on host
+        if: steps.kvm-check.outputs.kvm_available == 'true'
+        run: ./mkfs.lolelffs test.img 200
+
+      - name: Build and test kernel module via VNG
+        if: steps.kvm-check.outputs.kvm_available == 'true'
+        run: |
+          # Run tests via vng with recent kernel
+          # VNG uses a recent mainline kernel (configured via .github/kernel.config)
+          # Build the module inside the VM so it matches the running kernel
+          vng --rwdir $(pwd) --cwd $(pwd) --exec '
+            set -e
+
+            echo "=== Kernel Information ==="
+            uname -r
+            uname -a
+
+            echo ""
+            echo "=== Building kernel module in VM ==="
+            cd /home/daniel/git/lolelffs
+
+            # Clean previous builds
+            make clean
+
+            # Build module against the running kernel in the VM
+            make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+
+            echo "Module built successfully"
+            ls -lh lolelffs.ko
+
+            echo ""
+            echo "=== Loading kernel module dependencies ==="
+            modprobe lz4_compress || echo "lz4_compress not available"
+            modprobe zlib_deflate || echo "zlib_deflate not available"
+
+            echo ""
+            echo "=== Loading lolelffs kernel module ==="
+            insmod lolelffs.ko
+            lsmod | grep lolelffs
+
+            echo ""
+            echo "=== Running integration tests ==="
+            cd tests
+            ./test.sh ../test.img 200 ../mkfs.lolelffs
+
+            echo ""
+            echo "=== Unloading kernel module ==="
+            rmmod lolelffs
+
+            echo ""
+            echo "=== Kernel tests completed successfully ==="
+          '
+
+      - name: Upload kernel test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-test-logs
+          path: |
+            test.img
+            /var/log/kern.log
+
+  full-integration:
+    name: Full Integration Tests
+    runs-on: ubuntu-latest-4-cores
+    needs: [build-verification, kernel-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Make artifacts executable
+        run: |
+          chmod +x mkfs.lolelffs fsck.lolelffs unlock_lolelffs lolelffs
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 python3-pip build-essential libelf-dev linux-headers-$(uname -r)
+          pip3 install --user virtme-ng
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Run userspace encryption tests
+        run: ./tests/test_encryption.sh
+
+      - name: Run full system tests via VNG
+        run: |
+          if [ -w /dev/kvm ]; then
+            echo "Running full system tests with recent kernel..."
+            vng --rwdir $(pwd) --cwd $(pwd) --exec '
+              set -e
+
+              echo "=== Kernel version ==="
+              uname -r
+
+              echo ""
+              echo "=== Building kernel module in VM ==="
+              cd /home/daniel/git/lolelffs
+              make clean
+              make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
+
+              echo ""
+              echo "=== Loading modules ==="
+              modprobe lz4_compress || true
+              modprobe zlib_deflate || true
+              insmod lolelffs.ko
+
+              echo ""
+              echo "=== Running full system tests ==="
+              ./tests/test_full_system.sh
+
+              echo ""
+              echo "=== Cleanup ==="
+              rmmod lolelffs
+            '
+          else
+            echo "KVM not available, skipping kernel-based tests"
+          fi
+
+      - name: Upload integration test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-logs
+          path: |
+            **/*.log
+            **/*.img
