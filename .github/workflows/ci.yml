@@ -99,6 +99,7 @@ jobs:
   fuse-tests:
     name: FUSE Driver Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -133,7 +134,8 @@ jobs:
           make test-image
 
       - name: Run FUSE tests
-        run: ./tests/test_fuse.sh
+        timeout-minutes: 5
+        run: timeout 300 ./tests/test_fuse.sh
 
       - name: Upload FUSE logs on failure
         if: failure()
