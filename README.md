@@ -405,9 +405,6 @@ lolelffs ln -i image.img /target /link
 
 # Create symbolic link
 lolelffs ln -i image.img /target /link -s
-
-# Read symbolic link target
-lolelffs readlink -i image.img /symlink
 ```
 
 #### Filesystem Creation
@@ -418,13 +415,6 @@ lolelffs mkfs --size 100M output.img
 
 # Create with specific block count
 lolelffs mkfs --blocks 25600 output.img
-```
-
-#### Debugging
-
-```bash
-# Dump raw inode data
-lolelffs debug-inode -i image.img 1
 ```
 
 ### Example Workflow

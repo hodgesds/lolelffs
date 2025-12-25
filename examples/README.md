@@ -431,7 +431,7 @@ All examples are provided under the same license as the main lolelffs project.
 
 ## Support
 
-- **Issues**: Report bugs at https://github.com/anthropics/lolelffs/issues
+- **Issues**: Report bugs at https://github.com/hodgesds/lolelffs/issues
 - **Documentation**: See main README.md
 - **Questions**: Check existing examples first
 
