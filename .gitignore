@@ -26,3 +26,5 @@ modules.order
 *.img
 lolelffs_with_fs
 lolelffs_with_fs.orig
+lolelffs-fuse
+unlock_lolelffs
