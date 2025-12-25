@@ -3,7 +3,16 @@
 
 set -e
 
-LOLELFFS=./lolelffs-tools/target/release/lolelffs
+# Find lolelffs binary - try current directory first (for CI), then build directory
+if [ -x "./lolelffs" ]; then
+    LOLELFFS=./lolelffs
+elif [ -x "./lolelffs-tools/target/release/lolelffs" ]; then
+    LOLELFFS=./lolelffs-tools/target/release/lolelffs
+else
+    echo "ERROR: lolelffs binary not found"
+    exit 1
+fi
+
 IMG=/tmp/lolelffs_enc_test.img
 PASSWORD="MySecretPassword123"
 
