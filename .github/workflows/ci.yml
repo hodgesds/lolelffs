@@ -170,119 +170,38 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libelf-dev wget
+          sudo apt-get install -y build-essential libelf-dev
 
-      - name: Install latest mainline kernel headers
+      - name: Build userspace components
         run: |
-          # Fetch the latest stable kernel version from Ubuntu mainline
-          ARCH="amd64"
-
-          echo "Fetching latest kernel version from Ubuntu mainline..."
-
-          # Get list of available versions (stable only, no rc), properly deduplicated
-          VERSIONS=$(curl -s https://kernel.ubuntu.com/mainline/ | \
-            grep -oP 'v\K[0-9]+\.[0-9]+(\.[0-9]+)?' | \
-            grep -v 'rc' | \
-            sort -V -u -r | \
-            head -20)
-
-          echo "Top 20 available versions:"
-          echo "$VERSIONS"
-
-          # Try to download kernel headers, falling back to older versions if needed
-          SUCCESS=0
-          TRIED=0
-          MAX_TRIES=10
-
-          for VER in $VERSIONS; do
-            # Limit number of attempts
-            if [ $TRIED -ge $MAX_TRIES ]; then
-              echo "Reached maximum retry limit ($MAX_TRIES), stopping..."
-              break
-            fi
-            TRIED=$((TRIED + 1))
-
-            echo ""
-            echo "[$TRIED/$MAX_TRIES] Trying kernel version: ${VER}"
-
-            # Parse version components
-            MAJOR=$(echo $VER | cut -d. -f1)
-            MINOR=$(echo $VER | cut -d. -f2)
-            PATCH=$(echo $VER | cut -d. -f3)
-
-            # Ubuntu kernel packages always use X.Y.Z format
-            # If patch is missing, add .0
-            if [ -z "$PATCH" ]; then
-              FULL_VERSION="${MAJOR}.${MINOR}.0"
-              PATCH=0
-            else
-              FULL_VERSION="${VER}"
-            fi
-
-            KERNEL_BUILD=$(printf "%02d%02d%02d" $MAJOR $MINOR $PATCH)
-            BASE_URL="https://kernel.ubuntu.com/mainline/v${VER}/amd64"
-
-            # Try the full version format (6.18.0-061800)
-            HEADER_ALL="${BASE_URL}/linux-headers-${FULL_VERSION}-${KERNEL_BUILD}_${FULL_VERSION}-${KERNEL_BUILD}.1_all.deb"
-            HEADER_GENERIC="${BASE_URL}/linux-headers-${FULL_VERSION}-${KERNEL_BUILD}-generic_${FULL_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb"
-
-            # Quick check with timeout
-            if timeout 5 wget --spider -q "${HEADER_ALL}" 2>/dev/null; then
-              echo "✓ Found kernel headers for ${FULL_VERSION}"
-
-              # Download kernel headers
-              wget -q "${HEADER_ALL}"
-              wget -q "${HEADER_GENERIC}"
-
-              # Install headers
-              sudo dpkg -i linux-headers-*.deb || true
-              sudo apt-get install -f -y
-
-              echo "Successfully installed kernel headers for ${FULL_VERSION}"
-              echo "KERNEL_DIR=${FULL_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
-              SUCCESS=1
-              break
-            else
-              echo "✗ Kernel headers not available for ${FULL_VERSION}"
-            fi
-          done
-
-          if [ $SUCCESS -eq 0 ]; then
-            echo "ERROR: Could not find any available kernel headers in the top $MAX_TRIES versions"
-            exit 1
-          fi
-
-          echo ""
-          echo "Installed kernel modules:"
-          ls -la /lib/modules/
-
-      - name: Build all components
-        run: |
-          # Build with the latest mainline kernel headers
-          make KDIR=/lib/modules/${KERNEL_DIR}/build all
+          # Build userspace tools only
+          # Kernel module is built and tested in kernel-tests job with proper kernel via VNG
+          make mkfs.lolelffs
+          make fsck.lolelffs
+          make unlock_lolelffs
+          cd lolelffs-tools && cargo build --release
+          cp target/release/lolelffs ..
 
       - name: Verify binaries exist
         run: |
-          test -f lolelffs.ko
           test -f mkfs.lolelffs
           test -f fsck.lolelffs
           test -f unlock_lolelffs
           test -f lolelffs
-          echo "All binaries built successfully"
+          echo "All userspace binaries built successfully"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-artifacts
           path: |
-            lolelffs.ko
             mkfs.lolelffs
             fsck.lolelffs
             unlock_lolelffs
             lolelffs
 
   kernel-tests:
-    name: Kernel Module Tests (VNG)
+    name: All Tests (VNG with Latest Kernel)
     runs-on: ubuntu-latest-4-cores
     needs: build-verification
     continue-on-error: true  # Don't block PRs if KVM unavailable
@@ -302,7 +221,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 python3-pip build-essential libelf-dev linux-headers-$(uname -r)
+          sudo apt-get install -y qemu-system-x86 python3-pip build-essential libelf-dev
 
       - name: Install virtme-ng
         run: |
@@ -320,16 +239,11 @@ jobs:
             echo "kvm_available=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create test image on host
-        if: steps.kvm-check.outputs.kvm_available == 'true'
-        run: ./mkfs.lolelffs test.img 200
-
-      - name: Build and test kernel module via VNG
+      - name: Run all tests in VM with latest kernel
         if: steps.kvm-check.outputs.kvm_available == 'true'
         run: |
-          # Run tests via vng with recent kernel
-          # VNG uses a recent mainline kernel (configured via .github/kernel.config)
-          # Build the module inside the VM so it matches the running kernel
+          # Run all tests via vng with latest kernel
+          # VNG automatically fetches and uses the latest mainline kernel
           vng --rwdir $(pwd) --cwd $(pwd) --exec '
             set -e
 
@@ -338,17 +252,33 @@ jobs:
             uname -a
 
             echo ""
-            echo "=== Building kernel module in VM ==="
+            echo "=== Building test binaries in VM ==="
             cd /home/daniel/git/lolelffs
 
+            # Build unit tests
+            make test_unit
+            make test_mkfs
+
+            echo ""
+            echo "=== Running unit tests ==="
+            ./test_unit
+
+            echo ""
+            echo "=== Running mkfs tests ==="
+            mkdir -p test
+            ./test_mkfs
+
+            echo ""
+            echo "=== Building kernel module in VM ==="
             # Clean previous builds
             make clean
 
             # Build module against the running kernel in the VM
             make -C /lib/modules/$(uname -r)/build M=$(pwd) modules
 
-            echo "Module built successfully"
+            echo "Module built successfully against kernel $(uname -r)"
             ls -lh lolelffs.ko
+            modinfo lolelffs.ko
 
             echo ""
             echo "=== Loading kernel module dependencies ==="
@@ -361,7 +291,8 @@ jobs:
             lsmod | grep lolelffs
 
             echo ""
-            echo "=== Running integration tests ==="
+            echo "=== Running kernel integration tests ==="
+            ./mkfs.lolelffs test.img 200
             cd tests
             ./test.sh ../test.img 200 ../mkfs.lolelffs
 
@@ -370,17 +301,17 @@ jobs:
             rmmod lolelffs
 
             echo ""
-            echo "=== Kernel tests completed successfully ==="
+            echo "=== All tests completed successfully ==="
           '
 
-      - name: Upload kernel test logs on failure
+      - name: Upload test logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-test-logs
+          name: test-logs
           path: |
             test.img
-            /var/log/kern.log
+            test/*.img
 
   full-integration:
     name: Full Integration Tests

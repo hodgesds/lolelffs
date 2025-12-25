@@ -46,7 +46,8 @@ pub fn decompress_block(algo: u8, compressed: &[u8], expected_size: usize) -> Re
 
 /// Compress using LZ4
 fn compress_lz4(data: &[u8]) -> Result<Option<Vec<u8>>> {
-    let compressed = lz4::block::compress(data, None, true)?;
+    // Don't prepend size - we track it separately in metadata
+    let compressed = lz4::block::compress(data, None, false)?;
 
     // Only use compression if it saves space
     if compressed.len() < data.len() {
@@ -58,6 +59,7 @@ fn compress_lz4(data: &[u8]) -> Result<Option<Vec<u8>>> {
 
 /// Decompress using LZ4
 fn decompress_lz4(compressed: &[u8], expected_size: usize) -> Result<Vec<u8>> {
+    // Provide expected size since we don't prepend it during compression
     let decompressed = lz4::block::decompress(compressed, Some(expected_size as i32))?;
 
     if decompressed.len() != expected_size {

@@ -212,6 +212,10 @@ pub fn parse_xattr_entries(data: &[u8]) -> Result<Vec<XattrEntry>> {
             name,
             value,
         });
+
+        // Advance offset past the value to get to the next entry
+        // Value is stored inline right after name+NUL
+        offset += value_len as usize;
     }
 
     Ok(entries)
