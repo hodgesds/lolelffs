@@ -1,0 +1,217 @@
+name: Build Latest Kernel
+
+on:
+  workflow_dispatch:  # Manual trigger
+  schedule:
+    - cron: '0 3 * * 0'  # Weekly on Sunday at 3 AM UTC
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build-latest-kernel:
+    name: Build Latest Kernel from Source
+    runs-on: ubuntu-latest-16-cores
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          # Remove unnecessary packages to free up space
+          sudo apt-get remove -y '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell mono-devel || true
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            bc \
+            kmod \
+            cpio \
+            rsync \
+            wget \
+            xz-utils \
+            dwarves
+
+      - name: Fetch latest kernel version
+        id: kernel-version
+        run: |
+          echo "Fetching latest stable kernel version from kernel.org..."
+          LATEST_VERSION=$(curl -s https://www.kernel.org/releases.json | \
+            jq -r '.releases[] | select(.moniker == "stable") | .version' | \
+            head -1)
+
+          echo "Latest stable kernel: ${LATEST_VERSION}"
+          echo "VERSION=${LATEST_VERSION}" >> $GITHUB_OUTPUT
+          echo "MAJOR=$(echo $LATEST_VERSION | cut -d. -f1)" >> $GITHUB_OUTPUT
+
+      - name: Download kernel source
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+          MAJOR="${{ steps.kernel-version.outputs.MAJOR }}"
+
+          echo "Downloading kernel ${VERSION}..."
+          wget -q "https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
+
+          echo "Extracting kernel source..."
+          tar xf "linux-${VERSION}.tar.xz"
+
+          echo "Kernel source extracted to linux-${VERSION}/"
+          ls -la "linux-${VERSION}/"
+
+      - name: Configure kernel
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+          cd "linux-${VERSION}"
+
+          # Use our custom config if available, otherwise use defconfig
+          if [ -f ../.github/kernel.config ]; then
+            echo "Using custom kernel config from .github/kernel.config"
+            cp ../.github/kernel.config .config
+            make olddefconfig
+          else
+            echo "Using default config"
+            make defconfig
+          fi
+
+          # Enable module building
+          scripts/config --enable MODULES
+          scripts/config --enable MODULE_UNLOAD
+
+          # Enable compression modules needed by lolelffs
+          scripts/config --module ZLIB_DEFLATE
+          scripts/config --module LZ4_COMPRESS
+
+          # Disable debug options to speed up build
+          scripts/config --disable DEBUG_INFO
+          scripts/config --disable DEBUG_INFO_BTF
+          scripts/config --disable DEBUG_INFO_DWARF5
+
+          make olddefconfig
+
+          echo "Kernel configuration complete"
+
+      - name: Build kernel
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+          cd "linux-${VERSION}"
+
+          # Build kernel with all available cores
+          NPROC=$(nproc)
+          echo "Building kernel with ${NPROC} cores..."
+
+          make -j${NPROC} bzImage modules
+
+          echo "Kernel build complete"
+
+      - name: Install kernel modules
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+          cd "linux-${VERSION}"
+
+          # Install modules to a temporary location
+          sudo make modules_install INSTALL_MOD_PATH=/tmp/kernel-install
+
+          # Copy to standard location for building external modules
+          sudo mkdir -p "/lib/modules/${VERSION}"
+          sudo cp -r /tmp/kernel-install/lib/modules/${VERSION}/* "/lib/modules/${VERSION}/"
+
+          # Create build symlink
+          sudo ln -sf "$(pwd)" "/lib/modules/${VERSION}/build"
+          sudo ln -sf "$(pwd)" "/lib/modules/${VERSION}/source"
+
+          echo "Kernel modules installed to /lib/modules/${VERSION}/"
+          ls -la "/lib/modules/${VERSION}/"
+
+      - name: Build lolelffs kernel module
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+
+          echo "Building lolelffs kernel module against kernel ${VERSION}..."
+          make KDIR="/lib/modules/${VERSION}/build" -C "/lib/modules/${VERSION}/build" M=$(pwd) modules
+
+          ls -lh lolelffs.ko
+
+          # Verify module info
+          modinfo lolelffs.ko
+
+      - name: Run module tests
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+
+          echo "Module built successfully against kernel ${VERSION}"
+          echo "Module info:"
+          modinfo lolelffs.ko
+
+      - name: Create kernel package
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+
+          # Package the kernel headers for reuse
+          mkdir -p kernel-package
+          cd "linux-${VERSION}"
+
+          # Create a tarball of headers needed for module building
+          make headers_install INSTALL_HDR_PATH=../kernel-package/usr
+
+          # Copy build artifacts
+          cp .config ../kernel-package/
+          cp Module.symvers ../kernel-package/
+          cp System.map ../kernel-package/
+
+          cd ..
+          tar czf "kernel-headers-${VERSION}.tar.gz" kernel-package/
+
+          echo "Kernel headers packaged as kernel-headers-${VERSION}.tar.gz"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ steps.kernel-version.outputs.VERSION }}
+          path: |
+            lolelffs.ko
+            kernel-headers-*.tar.gz
+          retention-days: 30
+
+      - name: Update kernel config
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+
+          # Update the stored kernel config with the one we just built
+          cp "linux-${VERSION}/.config" .github/kernel.config
+
+          # Commit if changed
+          if git diff --quiet .github/kernel.config; then
+            echo "Kernel config unchanged"
+          else
+            echo "Kernel config updated to ${VERSION}"
+            # This would require a GitHub token with write permissions
+            # git config user.name "github-actions[bot]"
+            # git config user.email "github-actions[bot]@users.noreply.github.com"
+            # git add .github/kernel.config
+            # git commit -m "Update kernel config to ${VERSION}"
+            # git push
+          fi
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.kernel-version.outputs.VERSION }}"
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Kernel Version:** ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "**Module:** lolelffs.ko" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Module Information" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          modinfo lolelffs.ko >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

@@ -161,10 +161,49 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libelf-dev linux-headers-$(uname -r)
+          sudo apt-get install -y build-essential libelf-dev wget
+
+      - name: Install latest mainline kernel headers
+        run: |
+          # Fetch the latest stable kernel version from Ubuntu mainline
+          ARCH="amd64"
+
+          echo "Fetching latest kernel version from Ubuntu mainline..."
+          LATEST_VERSION=$(curl -s https://kernel.ubuntu.com/mainline/ | \
+            grep -oP 'v\K[0-9]+\.[0-9]+(\.[0-9]+)?' | \
+            grep -v 'rc' | \
+            sort -V | \
+            tail -1)
+
+          echo "Latest stable kernel: ${LATEST_VERSION}"
+
+          # Convert version to build number (e.g., 6.13.1 -> 060131)
+          MAJOR=$(echo $LATEST_VERSION | cut -d. -f1)
+          MINOR=$(echo $LATEST_VERSION | cut -d. -f2)
+          PATCH=$(echo $LATEST_VERSION | cut -d. -f3)
+          [ -z "$PATCH" ] && PATCH=0
+          KERNEL_BUILD=$(printf "%02d%02d%02d" $MAJOR $MINOR $PATCH)
+
+          BASE_URL="https://kernel.ubuntu.com/mainline/v${LATEST_VERSION}/amd64"
+
+          echo "Downloading kernel headers for ${LATEST_VERSION} (build ${KERNEL_BUILD})..."
+
+          # Download kernel headers
+          wget ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}_${LATEST_VERSION}-${KERNEL_BUILD}.1_all.deb
+          wget ${BASE_URL}/linux-headers-${LATEST_VERSION}-${KERNEL_BUILD}-generic_${LATEST_VERSION}-${KERNEL_BUILD}.1_${ARCH}.deb
+
+          # Install headers
+          sudo dpkg -i linux-headers-*.deb || true
+          sudo apt-get install -f -y
+
+          echo "Installed kernel headers for ${LATEST_VERSION}"
+          echo "KERNEL_DIR=${LATEST_VERSION}-${KERNEL_BUILD}-generic" >> $GITHUB_ENV
+          ls -la /lib/modules/
 
       - name: Build all components
-        run: make all
+        run: |
+          # Build with the latest mainline kernel headers
+          make KDIR=/lib/modules/${KERNEL_DIR}/build all
 
       - name: Verify binaries exist
         run: |
