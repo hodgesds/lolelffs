@@ -887,6 +887,22 @@ fn cmd_super(image: &PathBuf) -> Result<()> {
     println!("  Free inodes: {}", sb.nr_free_inodes);
     println!("  Free blocks: {}", sb.nr_free_blocks);
     println!();
+    println!("Extent limits:");
+    println!(
+        "  Max blocks per extent (with metadata): {}",
+        sb.max_extent_blocks
+    );
+    println!(
+        "  Max blocks per extent (large): {}",
+        sb.max_extent_blocks_large
+    );
+    println!();
+    println!("Features:");
+    println!("  Compression features: 0x{:04X}", sb.comp_features);
+    if sb.comp_features & LOLELFFS_FEATURE_LARGE_EXTENTS != 0 {
+        println!("    - Large extents support enabled");
+    }
+    println!();
     println!("Layout:");
     println!("  Block 0: Superblock");
     println!(

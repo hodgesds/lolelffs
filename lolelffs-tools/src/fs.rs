@@ -99,6 +99,7 @@ impl LolelfFs {
         let comp_min_block_size = file.read_u32::<LittleEndian>()?;
         let comp_features = file.read_u32::<LittleEndian>()?;
         let max_extent_blocks = file.read_u32::<LittleEndian>()?;
+        let max_extent_blocks_large = file.read_u32::<LittleEndian>()?;
         let enc_enabled = file.read_u32::<LittleEndian>()?;
         let enc_default_algo = file.read_u32::<LittleEndian>()?;
         let enc_kdf_algo = file.read_u32::<LittleEndian>()?;
@@ -130,6 +131,7 @@ impl LolelfFs {
             comp_min_block_size,
             comp_features,
             max_extent_blocks,
+            max_extent_blocks_large,
             enc_enabled,
             enc_default_algo,
             enc_kdf_algo,
@@ -174,6 +176,8 @@ impl LolelfFs {
             .write_u32::<LittleEndian>(self.superblock.comp_features)?;
         self.file
             .write_u32::<LittleEndian>(self.superblock.max_extent_blocks)?;
+        self.file
+            .write_u32::<LittleEndian>(self.superblock.max_extent_blocks_large)?;
         self.file
             .write_u32::<LittleEndian>(self.superblock.enc_enabled)?;
         self.file
@@ -444,8 +448,9 @@ impl LolelfFs {
             comp_default_algo: LOLELFFS_COMP_LZ4 as u32,
             comp_enabled: 1, // Compression enabled by default
             comp_min_block_size: 128,
-            comp_features: 0,
+            comp_features: LOLELFFS_FEATURE_LARGE_EXTENTS,
             max_extent_blocks: LOLELFFS_MAX_BLOCKS_PER_EXTENT,
+            max_extent_blocks_large: LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE,
             enc_enabled,
             enc_default_algo: enc_algo,
             enc_kdf_algo,
@@ -638,10 +643,25 @@ impl LolelfFs {
 
         while allocated < num_blocks {
             let remaining = num_blocks - allocated;
+
+            // Determine if we need metadata for this extent
+            let needs_metadata = false; // Currently always false - no per-block metadata
+
+            let max_extent_size = if needs_metadata {
+                LOLELFFS_MAX_BLOCKS_PER_EXTENT
+            } else {
+                let large = self.superblock.max_extent_blocks_large;
+                if large == 0 || large > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE {
+                    LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE
+                } else {
+                    large
+                }
+            };
+
             let extent_size = self
-                .calc_optimal_extent_size(allocated)
+                .calc_optimal_extent_size(allocated, needs_metadata)
                 .min(remaining)
-                .min(LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+                .min(max_extent_size);
 
             let start_block = self.alloc_blocks(extent_size)?;
 
@@ -772,10 +792,25 @@ impl LolelfFs {
 
             while allocated < num_blocks {
                 let remaining = num_blocks - allocated;
+
+                // Determine if we need metadata for this extent
+                let needs_metadata = false; // Currently always false - no per-block metadata
+
+                let max_extent_size = if needs_metadata {
+                    LOLELFFS_MAX_BLOCKS_PER_EXTENT
+                } else {
+                    let large = self.superblock.max_extent_blocks_large;
+                    if large == 0 || large > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE {
+                        LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE
+                    } else {
+                        large
+                    }
+                };
+
                 let extent_size = self
-                    .calc_optimal_extent_size(allocated)
+                    .calc_optimal_extent_size(allocated, needs_metadata)
                     .min(remaining)
-                    .min(LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+                    .min(max_extent_size);
 
                 let start_block = self.alloc_blocks(extent_size)?;
 

@@ -126,8 +126,17 @@ static int check_superblock(void)
              max_extent_blocks, LOLELFFS_MAX_BLOCKS_PER_EXTENT);
     }
 
+    /* Validate max extent blocks (large) */
+    uint32_t max_large = le32toh(sb.max_extent_blocks_large);
+    if (max_large > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE) {
+        ERROR("Superblock max_extent_blocks_large too large: %u > %u",
+              max_large, LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE);
+        errors++;
+    }
+
     INFO("Compression: %s (algorithm: %u)", comp_enabled ? "enabled" : "disabled", comp_algo);
     INFO("Max extent blocks: %u", max_extent_blocks);
+    INFO("Max extent blocks (large): %u", max_large);
 
     /* Check encryption settings */
     uint32_t enc_enabled = le32toh(sb.enc_enabled);
@@ -342,13 +351,22 @@ static int check_root_extent_block(void)
             INFO("Extent %u: start=%u, len=%u, logical=%u, comp=%u, enc=%u, flags=0x%04x",
                  i, ee_start, ee_len, ee_block, ee_comp_algo, ee_enc_algo, ee_flags);
 
-            /* Validate extent */
+            /* Validate extent based on flags */
             if (ee_len == 0) {
                 ERROR("Extent %u has zero length", i);
             }
-            if (ee_len > LOLELFFS_MAX_BLOCKS_PER_EXTENT) {
+
+            uint32_t max_blocks;
+            if (ee_flags & LOLELFFS_EXT_HAS_META) {
+                max_blocks = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+            } else {
+                uint32_t max_large = le32toh(sb.max_extent_blocks_large);
+                max_blocks = max_large ? max_large : LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+            }
+
+            if (ee_len > max_blocks) {
                 ERROR("Extent %u length %u exceeds maximum %u",
-                      i, ee_len, LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+                      i, ee_len, max_blocks);
             }
             if (ee_start + ee_len > le32toh(sb.nr_blocks)) {
                 ERROR("Extent %u [%u, %u) outside filesystem",

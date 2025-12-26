@@ -38,9 +38,20 @@ static int __maybe_unused lolelffs_validate_extents(struct lolelffs_file_ei_bloc
     for (i = 0; i < nr_extents; i++) {
         struct lolelffs_extent *ext = &index->extents[i];
 
-        /* Check length is valid */
-        if (ext->ee_len == 0 || ext->ee_len > LOLELFFS_MAX_BLOCKS_PER_EXTENT)
+        /* Check length is valid based on extent flags */
+        uint32_t max_blocks;
+        if (ext->ee_flags & LOLELFFS_EXT_HAS_META) {
+            /* Extent has metadata block - limited to metadata capacity */
+            max_blocks = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+        } else {
+            /* No metadata needed - can use large extent */
+            max_blocks = LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE;
+        }
+
+        if (ext->ee_len == 0 || ext->ee_len > max_blocks) {
+            pr_err("Invalid extent length %u (max %u)\n", ext->ee_len, max_blocks);
             return -EINVAL;
+        }
 
         /* Check logical blocks are contiguous */
         if (ext->ee_block != expected_block)

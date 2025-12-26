@@ -10,11 +10,15 @@
 
 #define LOLELFFS_BLOCK_SIZE (1 << 12) /* 4 KiB */
 #define LOLELFFS_MAX_BLOCKS_PER_EXTENT 2048 /* Max blocks per extent with compression */
+#define LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE 524288 /* Max for uncompressed/uniform (512K blocks = 2GB) */
 
 #define LOLELFFS_FILENAME_LEN 255
 
 /* Filesystem version (always 1 - compression support is mandatory) */
 #define LOLELFFS_VERSION 1
+
+/* Feature flags for comp_features field */
+#define LOLELFFS_FEATURE_LARGE_EXTENTS 0x0001
 
 /* Compression algorithm IDs */
 #define LOLELFFS_COMP_NONE      0  /* No compression */
@@ -78,7 +82,7 @@ struct lolelffs_file {
 #define LOLELFFS_MAX_EXTENTS \
     ((LOLELFFS_BLOCK_SIZE - sizeof(uint32_t)) / sizeof(struct lolelffs_extent))
 #define LOLELFFS_MAX_FILESIZE                                      \
-    ((uint64_t) LOLELFFS_MAX_BLOCKS_PER_EXTENT * LOLELFFS_BLOCK_SIZE \
+    ((uint64_t) LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE * LOLELFFS_BLOCK_SIZE \
         * LOLELFFS_MAX_EXTENTS)
 
 #define LOLELFFS_FILES_PER_BLOCK \
@@ -165,6 +169,7 @@ struct lolelffs_sb_info {
     uint32_t comp_min_block_size;  /* Don't compress blocks smaller than this */
     uint32_t comp_features;        /* Feature flags for future extensions */
     uint32_t max_extent_blocks;    /* Max blocks per extent (2048) */
+    uint32_t max_extent_blocks_large; /* Max blocks for extents without metadata (524288) */
 
     /* Encryption support */
     uint32_t enc_enabled;          /* Encryption enabled flag */

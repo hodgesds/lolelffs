@@ -14,9 +14,15 @@ pub const LOLELFFS_INODES_PER_BLOCK: u32 = 56;
 /// Maximum blocks per extent (with compression)
 pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT: u32 = 2048;
 
+/// Maximum blocks per extent (large - for uncompressed/uniform)
+pub const LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE: u32 = 524288;
+
 /// Maximum extents per file (24-byte extents with compression+encryption)
 /// Calculated as: (4096 - 4) / 24 = 170
 pub const LOLELFFS_MAX_EXTENTS: usize = 170;
+
+/// Feature flags for comp_features field
+pub const LOLELFFS_FEATURE_LARGE_EXTENTS: u32 = 0x0001;
 
 /// Maximum filename length
 pub const LOLELFFS_MAX_FILENAME: usize = 255;
@@ -103,6 +109,8 @@ pub struct Superblock {
     pub comp_features: u32,
     /// Max blocks per extent (2048)
     pub max_extent_blocks: u32,
+    /// Max blocks for extents without metadata (524288)
+    pub max_extent_blocks_large: u32,
     /// Encryption enabled flag
     pub enc_enabled: u32,
     /// Default encryption algorithm
@@ -126,8 +134,8 @@ pub struct Superblock {
 }
 
 impl Superblock {
-    /// Size of superblock on disk (168 bytes with encryption)
-    pub const SIZE: usize = 168;
+    /// Size of superblock on disk (172 bytes with encryption + large extents)
+    pub const SIZE: usize = 172;
 
     /// Check if compression is enabled
     pub fn is_compression_enabled(&self) -> bool {

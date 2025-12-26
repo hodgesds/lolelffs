@@ -59,8 +59,9 @@ static struct superblock *write_superblock(int fd, struct stat *fstats)
         .comp_default_algo = htole32(LOLELFFS_COMP_LZ4),
         .comp_enabled = htole32(1),  /* Compression enabled by default */
         .comp_min_block_size = htole32(128),  /* Don't compress blocks < 128 bytes */
-        .comp_features = htole32(0),
+        .comp_features = htole32(LOLELFFS_FEATURE_LARGE_EXTENTS),
         .max_extent_blocks = htole32(LOLELFFS_MAX_BLOCKS_PER_EXTENT),
+        .max_extent_blocks_large = htole32(LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE),
         /* Encryption support */
         .enc_enabled = htole32(0),  /* Encryption disabled by default */
         .enc_default_algo = htole32(LOLELFFS_ENC_NONE),

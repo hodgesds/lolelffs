@@ -60,7 +60,9 @@ static int lolelffs_file_get_block(struct inode *inode,
         if (!create)
             return 0;
         /* Use adaptive allocation based on current file size */
-        alloc_size = calc_optimal_extent_size(sbi, inode->i_blocks);
+        /* Currently always false - no per-block metadata */
+        bool needs_metadata = false;
+        alloc_size = calc_optimal_extent_size(sbi, inode->i_blocks, needs_metadata);
         bno = get_free_blocks(sbi, alloc_size);
         if (!bno) {
             ret = -ENOSPC;

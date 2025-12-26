@@ -229,9 +229,9 @@ lolelffs write -i compressed.img /large.txt -f source.txt
 
 - **Magic number**: `0x101E1FF5` ("lolelffs" in hexspeak)
 - **Block size**: 4096 bytes
-- **Max file size**: ~84 GB
+- **Max file size**: ~347 GB (uncompressed), ~1.33 GB (mixed compression)
 - **Max filename**: 255 characters
-- **Extent-based allocation**: Up to 340 extents per file
+- **Extent-based allocation**: Up to 170 extents per file
 
 ## Common Commands Reference
 

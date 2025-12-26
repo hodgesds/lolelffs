@@ -77,8 +77,8 @@ static int test_max_extents(void)
 /* Test maximum file size calculation */
 static int test_max_filesize(void)
 {
-    /* Calculate expected max file size from constants */
-    uint64_t expected = (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT *
+    /* Calculate expected max file size from constants (using large extents) */
+    uint64_t expected = (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE *
                         LOLELFFS_BLOCK_SIZE * LOLELFFS_MAX_EXTENTS;
     ASSERT_EQ(LOLELFFS_MAX_FILESIZE, expected);
 
@@ -168,9 +168,13 @@ static int test_idiv_ceil(void)
 /* Test blocks per extent limit */
 static int test_blocks_per_extent(void)
 {
-    /* With compression support, max blocks per extent is limited to 2048
+    /* With compression metadata, max blocks per extent is limited to 2048
      * This allows metadata for 2048 blocks to fit in one metadata block */
     ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 2048);
+
+    /* Without per-block metadata, can use large extents (524288 blocks = 2GB) */
+    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE, 524288);
+
     return 1;
 }
 
@@ -340,6 +344,13 @@ static int test_adaptive_alloc_sizing(void)
 
     /* Verify the constant is actually 2048 as specified in header */
     ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT, 2048);
+
+    /* Verify large extent constant for extents without metadata */
+    ASSERT_EQ(LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE, 524288);
+
+    /* Verify large extent size is reasonable (2GB per extent) */
+    uint64_t extent_size_bytes = (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE * LOLELFFS_BLOCK_SIZE;
+    ASSERT_EQ(extent_size_bytes, 2ULL * 1024 * 1024 * 1024);
 
     return 1;
 }

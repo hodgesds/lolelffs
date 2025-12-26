@@ -207,13 +207,33 @@ impl LolelfFs {
     }
 
     /// Calculate optimal extent size based on file size
-    pub fn calc_optimal_extent_size(&self, current_blocks: u32) -> u32 {
-        if current_blocks < 8 {
+    pub fn calc_optimal_extent_size(&self, current_blocks: u32, needs_metadata: bool) -> u32 {
+        // Determine maximum based on metadata requirement
+        let max_size = if needs_metadata {
+            LOLELFFS_MAX_BLOCKS_PER_EXTENT
+        } else {
+            let large = self.superblock.max_extent_blocks_large;
+            if large == 0 || large > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE {
+                LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE
+            } else {
+                large
+            }
+        };
+
+        // Adaptive sizing strategy for gradual growth
+        let alloc_size = if current_blocks < 8 {
             2
         } else if current_blocks < 32 {
             4
+        } else if current_blocks < 256 {
+            64
+        } else if current_blocks < 1024 {
+            256
         } else {
-            LOLELFFS_MAX_BLOCKS_PER_EXTENT
-        }
+            max_size
+        };
+
+        // Ensure we don't exceed available blocks
+        alloc_size.min(self.superblock.nr_free_blocks)
     }
 }

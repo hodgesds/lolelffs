@@ -186,23 +186,41 @@ static inline void put_blocks(struct lolelffs_sb_info *sbi,
 
 /*
  * Calculate optimal extent allocation size based on current file state.
- * Strategy:
+ * Strategy (adaptive based on metadata requirement):
  * - Small files (< 8 blocks): allocate 2 blocks to reduce waste
  * - Medium files (8-32 blocks): allocate 4 blocks
- * - Large files (> 32 blocks): allocate 8 blocks (max per extent)
+ * - Growing files (32-256 blocks): allocate 64 blocks
+ * - Larger files (256-1024 blocks): allocate 256 blocks
+ * - Large files (>= 1024 blocks): allocate max (2048 with metadata, 524288 without)
  * Always ensures we don't exceed available free blocks.
  */
 static inline uint32_t calc_optimal_extent_size(struct lolelffs_sb_info *sbi,
-                                                uint32_t current_blocks)
+                                                uint32_t current_blocks,
+                                                bool needs_metadata)
 {
     uint32_t alloc_size;
+    uint32_t max_size;
 
+    /* Determine maximum based on metadata requirement */
+    if (needs_metadata) {
+        max_size = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+    } else {
+        max_size = sbi->max_extent_blocks_large;
+        if (max_size == 0 || max_size > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE)
+            max_size = LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE;
+    }
+
+    /* Adaptive sizing strategy for gradual growth */
     if (current_blocks < 8)
         alloc_size = 2;
     else if (current_blocks < 32)
         alloc_size = 4;
+    else if (current_blocks < 256)
+        alloc_size = 64;     /* Intermediate step */
+    else if (current_blocks < 1024)
+        alloc_size = 256;    /* Another intermediate step */
     else
-        alloc_size = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+        alloc_size = max_size;  /* Use maximum for large files */
 
     /* Ensure we don't exceed available blocks */
     if (alloc_size > sbi->nr_free_blocks)

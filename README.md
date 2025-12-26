@@ -156,7 +156,9 @@ lolelffs write -i test_runner /fixtures/test_data.json -c '{"test": true}'
 | Feature | Description | Limits |
 |---------|-------------|--------|
 | **ELF-compliant** | Filesystems can exist within valid ELF binaries | N/A |
-| **Extent-based allocation** | Efficient storage with contiguous block ranges | Up to 340 extents per file |
+| **Extent-based allocation** | Efficient storage with contiguous block ranges | Up to 170 extents per file |
+| **Large extent support** | Extents up to 2GB for uncompressed files | 524,288 blocks per extent |
+| **Sparse metadata** | Metadata blocks only allocated when needed | Reduces overhead |
 | **POSIX operations** | Files, directories, hard links, symbolic links | Full support |
 | **Permissions** | Standard Unix mode, uid, gid | rwx for user/group/other |
 | **Timestamps** | atime, mtime, ctime | Unix seconds |
@@ -166,11 +168,13 @@ lolelffs write -i test_runner /fixtures/test_data.json -c '{"test": true}'
 | Metric | Value |
 |--------|-------|
 | Block size | 4 KB (fixed) |
-| Maximum file size | ~84 GB |
+| Maximum file size | ~347 GB (uncompressed), ~1.33 GB (mixed compression) |
 | Maximum filename | 255 characters |
 | Maximum files per directory | 40,920 |
 | Inodes per block | 56 |
-| Blocks per extent | 65,536 |
+| Blocks per extent (uncompressed) | 524,288 (2 GB) |
+| Blocks per extent (with metadata) | 2,048 (8 MB) |
+| Max extents per file | 170 |
 
 ### Tooling
 
@@ -508,18 +512,38 @@ Creates a 200MB test filesystem at `test.img`.
 
 ### Data Structures
 
-#### Superblock (32 bytes)
+#### Superblock (164 bytes)
 
 ```c
 struct lolelffs_sb_info {
-    uint32_t magic;             // 0x101E1FF5
-    uint32_t nr_blocks;         // Total blocks
-    uint32_t nr_inodes;         // Total inodes
-    uint32_t nr_istore_blocks;  // Inode store blocks
-    uint32_t nr_ifree_blocks;   // Inode bitmap blocks
-    uint32_t nr_bfree_blocks;   // Block bitmap blocks
-    uint32_t nr_free_inodes;    // Available inodes
-    uint32_t nr_free_blocks;    // Available blocks
+    uint32_t magic;                // 0x101E1FF5
+    uint32_t nr_blocks;            // Total blocks
+    uint32_t nr_inodes;            // Total inodes
+    uint32_t nr_istore_blocks;     // Inode store blocks
+    uint32_t nr_ifree_blocks;      // Inode bitmap blocks
+    uint32_t nr_bfree_blocks;      // Block bitmap blocks
+    uint32_t nr_free_inodes;       // Available inodes
+    uint32_t nr_free_blocks;       // Available blocks
+
+    // Compression support
+    uint32_t version;              // Filesystem version (always 1)
+    uint32_t comp_default_algo;    // Default compression algorithm
+    uint32_t comp_enabled;         // Compression enabled flag
+    uint32_t comp_min_block_size;  // Min block size for compression
+    uint32_t comp_features;        // Feature flags
+    uint32_t max_extent_blocks;    // Max blocks per extent (2048)
+
+    // Encryption support
+    uint32_t enc_enabled;          // Encryption enabled flag
+    uint32_t enc_default_algo;     // Default encryption algorithm
+    uint32_t enc_kdf_algo;         // Key derivation function
+    uint32_t enc_kdf_iterations;   // KDF iterations
+    uint32_t enc_kdf_memory;       // KDF memory cost (KB)
+    uint32_t enc_kdf_parallelism;  // KDF parallelism
+    uint8_t  enc_salt[32];         // Salt for key derivation
+    uint8_t  enc_master_key[32];   // Encrypted master key
+    uint32_t enc_features;         // Feature flags
+    uint32_t reserved[3];          // Reserved for future use
 };
 ```
 
@@ -527,29 +551,56 @@ struct lolelffs_sb_info {
 
 ```c
 struct lolelffs_inode {
-    uint32_t i_mode;    // File type + permissions
-    uint32_t i_uid;     // Owner user ID
-    uint32_t i_gid;     // Owner group ID
-    uint32_t i_size;    // Size in bytes
-    uint32_t i_ctime;   // Change time
-    uint32_t i_atime;   // Access time
-    uint32_t i_mtime;   // Modification time
-    uint32_t i_blocks;  // Block count
-    uint32_t i_nlink;   // Hard link count
-    uint32_t ei_block;  // Extent index block
-    char i_data[32];    // Symlink target or reserved
+    uint32_t i_mode;       // File type + permissions
+    uint32_t i_uid;        // Owner user ID
+    uint32_t i_gid;        // Owner group ID
+    uint32_t i_size;       // Size in bytes
+    uint32_t i_ctime;      // Change time
+    uint32_t i_atime;      // Access time
+    uint32_t i_mtime;      // Modification time
+    uint32_t i_blocks;     // Block count
+    uint32_t i_nlink;      // Hard link count
+    uint32_t ei_block;     // Extent index block
+    uint32_t xattr_block;  // Extended attributes block (0 = none)
+    char i_data[28];       // Symlink target (max 27 chars + NUL)
 };
 ```
 
-#### Extent (12 bytes)
+#### Extent (24 bytes)
 
 ```c
 struct lolelffs_extent {
-    uint32_t ee_block;  // First logical block
-    uint32_t ee_len;    // Number of blocks
-    uint32_t ee_start;  // First physical block
+    uint32_t ee_block;      // First logical block number
+    uint32_t ee_len;        // Number of blocks in extent
+    uint32_t ee_start;      // First physical block number
+    uint16_t ee_comp_algo;  // Compression algorithm for extent
+    uint8_t  ee_enc_algo;   // Encryption algorithm for extent
+    uint8_t  ee_reserved;   // Reserved for alignment
+    uint16_t ee_flags;      // Flags (compressed, encrypted, etc.)
+    uint16_t ee_reserved2;  // Reserved for alignment
+    uint32_t ee_meta;       // Block number of metadata
 };
 ```
+
+### Large Extent Support
+
+lolelffs supports two extent size limits depending on compression metadata requirements:
+
+**Large Extents (No Per-Block Metadata):**
+- Used for uncompressed files or files with uniform compression
+- Maximum size: 524,288 blocks (2 GB)
+- No metadata block allocation needed
+- `ee_meta = 0` and `LOLELFFS_EXT_HAS_META` flag not set
+- Enables files up to ~347 GB
+
+**Standard Extents (With Per-Block Metadata):**
+- Used for mixed compression (different algorithms per block)
+- Maximum size: 2,048 blocks (8 MB)
+- Metadata block allocated at `ee_meta` block number
+- `LOLELFFS_EXT_HAS_META` flag set
+- Enables granular per-block compression control
+
+The filesystem automatically chooses the appropriate extent type based on compression requirements. Currently, per-block metadata is not used, so all extents use the large extent format.
 
 #### Directory Entry (259 bytes)
 
@@ -562,14 +613,26 @@ struct lolelffs_file {
 
 ### Key Calculations
 
+#### Uncompressed or Uniform Compression:
 ```
 BLOCK_SIZE = 4096 bytes
 INODES_PER_BLOCK = 4096 / 72 = 56
-MAX_EXTENTS = (4096 - 4) / 12 = 340
-BLOCKS_PER_EXTENT = 65536
+MAX_EXTENTS = (4096 - 4) / 24 = 170
+MAX_BLOCKS_PER_EXTENT_LARGE = 524,288 (2 GB per extent)
+MAX_FILESIZE = 524,288 × 4096 × 170 = 368,050,700,288 bytes (~347 GB)
+```
+
+#### Mixed Compression (Per-Block Metadata):
+```
+MAX_BLOCKS_PER_EXTENT = 2,048 (limited by metadata block)
+MAX_FILESIZE = 2,048 × 4096 × 170 = 1,426,063,360 bytes (~1.33 GB)
+METADATA_CAPACITY = 2,040 blocks per 4KB metadata block
+```
+
+#### Common Values:
+```
 FILES_PER_BLOCK = 4096 / 259 = 15
-MAX_FILESIZE = 65536 × 4096 × 340 = 90,177,536,000 bytes (~84 GB)
-MAX_FILES_PER_DIR = 15 × 340 × 65536 = 334,668,800
+MAX_FILES_PER_DIR = 15 × 170 × 524,288 = 1,335,705,600
 ```
 
 ### ELF Integration
@@ -616,11 +679,10 @@ The extent search uses binary search with locality hints:
 ## Limitations
 
 - **Block size**: Fixed at 4 KB (cannot be changed)
-- **Maximum file size**: ~84 GB per file
-- **No extended attributes**: xattr not supported
+- **Maximum file size**: ~347 GB for uncompressed files, ~1.33 GB for files with per-block mixed compression
+- **Maximum extent count**: 170 extents per file (limited by 4KB extent index block)
+- **Metadata block capacity**: 2,040 blocks per metadata block (limits mixed-compression extent size)
 - **No journaling**: Not crash-safe
-- **No encryption**: Data stored in plaintext
-- **No compression**: Files stored uncompressed
 - **Single-threaded mkfs**: Large images take time to create
 - **No resize**: Cannot grow or shrink existing filesystems
 

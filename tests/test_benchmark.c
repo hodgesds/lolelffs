@@ -483,11 +483,11 @@ static int bench_extent_file_relationship(void)
         uint32_t expected_extents;
     } test_cases[] = {
         {1, 1},
-        {8, 1},
-        {9, 2},
-        {16, 2},
-        {64, 8},
-        {341 * 8, 341}, /* Max file size */
+        {2048, 1},
+        {2049, 2},
+        {4096, 2},
+        {8192, 4},
+        {LOLELFFS_MAX_EXTENTS * LOLELFFS_MAX_BLOCKS_PER_EXTENT, LOLELFFS_MAX_EXTENTS}, /* Max file size */
         {0, 0}
     };
 

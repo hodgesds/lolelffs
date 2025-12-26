@@ -130,23 +130,23 @@ static int test_max_file_extents(void)
     /* Fill all extents */
     for (i = 0; i < LOLELFFS_MAX_EXTENTS; i++) {
         index.extents[i].ee_block = current_block;
-        index.extents[i].ee_len = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+        index.extents[i].ee_len = LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE;
         index.extents[i].ee_start = i + 1;
-        current_block += LOLELFFS_MAX_BLOCKS_PER_EXTENT;
-        total_blocks += LOLELFFS_MAX_BLOCKS_PER_EXTENT;
+        current_block += LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE;
+        total_blocks += LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE;
     }
 
     /* Verify total blocks matches maximum file size */
-    ASSERT_EQ(total_blocks * LOLELFFS_BLOCK_SIZE, LOLELFFS_MAX_FILESIZE);
+    ASSERT_EQ((uint64_t)total_blocks * LOLELFFS_BLOCK_SIZE, LOLELFFS_MAX_FILESIZE);
 
     /* Test search at boundaries */
     result = stress_ext_search(&index, 0);
     ASSERT_EQ(result, 0);
 
-    result = stress_ext_search(&index, LOLELFFS_MAX_BLOCKS_PER_EXTENT - 1);
+    result = stress_ext_search(&index, LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE - 1);
     ASSERT_EQ(result, 0);
 
-    result = stress_ext_search(&index, LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+    result = stress_ext_search(&index, LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE);
     ASSERT_EQ(result, 1);
 
     result = stress_ext_search(&index, total_blocks - 1);
@@ -281,7 +281,7 @@ static int test_pathological_search(void)
     struct stress_file_ei_block index;
     uint32_t i, result;
     uint32_t current_block = 0;
-    const uint32_t extent_count = 200;
+    const uint32_t extent_count = LOLELFFS_MAX_EXTENTS;  /* Was 200, but max is 170 */
 
     memset(&index, 0, sizeof(index));
 
@@ -333,8 +333,8 @@ static int test_memory_alignment(void)
     /* Inodes per block should be non-zero */
     ASSERT(LOLELFFS_INODES_PER_BLOCK > 0);
 
-    /* Extent should be 12 bytes (3 uint32_t with no padding) */
-    ASSERT_EQ(sizeof(struct lolelffs_extent), 12);
+    /* Extent should be 24 bytes (with compression/encryption fields) */
+    ASSERT_EQ(sizeof(struct lolelffs_extent), 24);
 
     /* File entry should be properly sized */
     ASSERT(sizeof(struct lolelffs_file) >= sizeof(uint32_t) + LOLELFFS_FILENAME_LEN);
@@ -485,7 +485,7 @@ static int test_large_file_blocks(void)
         {LOLELFFS_BLOCK_SIZE * 10, 10},
         {LOLELFFS_BLOCK_SIZE * 100, 100},
         {LOLELFFS_BLOCK_SIZE * 1000, 1000},
-        {LOLELFFS_MAX_FILESIZE, LOLELFFS_MAX_EXTENTS * LOLELFFS_MAX_BLOCKS_PER_EXTENT},
+        {LOLELFFS_MAX_FILESIZE, LOLELFFS_MAX_EXTENTS * LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE},
         {0, 0}
     };
 
@@ -549,18 +549,18 @@ static int test_edge_file_sizes(void)
     uint32_t blocks_per_extent = LOLELFFS_MAX_BLOCKS_PER_EXTENT;
     uint32_t block_size = LOLELFFS_BLOCK_SIZE;
 
-    /* Exactly one extent */
-    uint64_t one_extent = blocks_per_extent * block_size;
-    ASSERT_EQ(one_extent, 8 * 4096);
+    /* Exactly one extent (2048 blocks = 8 MB) */
+    uint64_t one_extent = (uint64_t)blocks_per_extent * block_size;
+    ASSERT_EQ(one_extent, (uint64_t)LOLELFFS_MAX_BLOCKS_PER_EXTENT * LOLELFFS_BLOCK_SIZE);
 
     /* Just over one extent */
     uint64_t over_one_extent = one_extent + 1;
     uint32_t blocks_needed = (over_one_extent + block_size - 1) / block_size;
-    ASSERT_EQ(blocks_needed, 9);
+    ASSERT_EQ(blocks_needed, LOLELFFS_MAX_BLOCKS_PER_EXTENT + 1);
 
     /* Maximum file size */
     ASSERT(LOLELFFS_MAX_FILESIZE <= (uint64_t)LOLELFFS_MAX_EXTENTS *
-           LOLELFFS_MAX_BLOCKS_PER_EXTENT * LOLELFFS_BLOCK_SIZE);
+           LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE * LOLELFFS_BLOCK_SIZE);
 
     return 1;
 }

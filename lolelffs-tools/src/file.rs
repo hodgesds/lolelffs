@@ -143,10 +143,25 @@ impl LolelfFs {
 
         while allocated < num_blocks {
             let remaining = num_blocks - allocated;
+
+            // Determine if we need metadata for this extent
+            let needs_metadata = false; // Currently always false - no per-block metadata
+
+            let max_extent_size = if needs_metadata {
+                LOLELFFS_MAX_BLOCKS_PER_EXTENT
+            } else {
+                let large = self.superblock.max_extent_blocks_large;
+                if large == 0 || large > LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE {
+                    LOLELFFS_MAX_BLOCKS_PER_EXTENT_LARGE
+                } else {
+                    large
+                }
+            };
+
             let extent_size = self
-                .calc_optimal_extent_size(allocated)
+                .calc_optimal_extent_size(allocated, needs_metadata)
                 .min(remaining)
-                .min(LOLELFFS_MAX_BLOCKS_PER_EXTENT);
+                .min(max_extent_size);
 
             let start_block = self.alloc_blocks(extent_size)?;
 
