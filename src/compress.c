@@ -13,15 +13,11 @@
 #include <linux/lz4.h>
 #include <linux/zlib.h>
 /*
- * ZSTD support status:
- * - Some kernels have CONFIG_ZSTD_COMPRESS but don't export ZSTD_compress/ZSTD_decompress
- * - Only context-based functions (zstd_compress_cctx) are exported
- * - TODO: Implement using context-based API for full ZSTD support
- * - For now, ZSTD is disabled to avoid link errors
+ * ZSTD support using context-based API:
+ * - Uses zstd_compress_cctx/zstd_decompress_dctx which are properly exported
+ * - Requires workspace allocation for compression and decompression contexts
  */
-#define LOLELFFS_ENABLE_ZSTD 0
-
-#if LOLELFFS_ENABLE_ZSTD && defined(CONFIG_ZSTD_COMPRESS)
+#if defined(CONFIG_ZSTD_COMPRESS) && defined(CONFIG_ZSTD_DECOMPRESS)
 #include <linux/zstd.h>
 #define HAVE_ZSTD 1
 #else
@@ -42,8 +38,10 @@ static const char *comp_algo_names[] = {
 
 /* Compression context */
 struct lolelffs_comp_ctx {
-	void *workspace;
+	void *workspace;       /* Compression workspace */
 	size_t workspace_size;
+	void *decomp_workspace; /* Decompression workspace (for ZSTD) */
+	size_t decomp_workspace_size;
 	bool available;
 };
 
@@ -184,17 +182,26 @@ static int lolelffs_decompress_zlib(const void *src, size_t src_len,
 
 #if HAVE_ZSTD
 /**
- * lolelffs_compress_zstd - Compress using zstd
+ * lolelffs_compress_zstd - Compress using zstd context-based API
  */
 static int lolelffs_compress_zstd(const void *src, size_t src_len,
 				   void *dst, size_t *comp_size)
 {
+	zstd_parameters params = zstd_get_params(3, src_len);
+	zstd_cctx *cctx;
 	size_t ret;
 
-	/* Use simple ZSTD_compress - no context needed */
-	ret = ZSTD_compress(dst, LOLELFFS_BLOCK_SIZE, src, src_len, 3);
+	/* Initialize compression context */
+	cctx = zstd_init_cctx(comp_ctx[LOLELFFS_COMP_ZSTD].workspace,
+			      comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size);
+	if (!cctx)
+		return -EIO;
 
-	if (ZSTD_isError(ret))
+	/* Compress using context */
+	ret = zstd_compress_cctx(cctx, dst, LOLELFFS_BLOCK_SIZE,
+				 src, src_len, &params);
+
+	if (zstd_is_error(ret))
 		return -EIO;
 
 	*comp_size = ret;
@@ -202,17 +209,24 @@ static int lolelffs_compress_zstd(const void *src, size_t src_len,
 }
 
 /**
- * lolelffs_decompress_zstd - Decompress using zstd
+ * lolelffs_decompress_zstd - Decompress using zstd context-based API
  */
 static int lolelffs_decompress_zstd(const void *src, size_t src_len,
 				     void *dst, size_t dst_len)
 {
+	zstd_dctx *dctx;
 	size_t ret;
 
-	/* Use simple ZSTD_decompress - no context needed */
-	ret = ZSTD_decompress(dst, dst_len, src, src_len);
+	/* Initialize decompression context */
+	dctx = zstd_init_dctx(comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace,
+			      comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace_size);
+	if (!dctx)
+		return -EIO;
 
-	if (ZSTD_isError(ret))
+	/* Decompress using context */
+	ret = zstd_decompress_dctx(dctx, dst, dst_len, src, src_len);
+
+	if (zstd_is_error(ret))
 		return -EIO;
 
 	if (ret != dst_len)
@@ -352,17 +366,41 @@ int lolelffs_comp_init(void)
 	}
 
 #if HAVE_ZSTD
-	/* Initialize zstd - uses simple API, no workspace needed */
-	comp_ctx[LOLELFFS_COMP_ZSTD].workspace = NULL;
-	comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size = 0;
-	comp_ctx[LOLELFFS_COMP_ZSTD].available = true;
-	any_available = true;
-	pr_info("lolelffs: zstd compression initialized\n");
+	/* Initialize zstd - allocate workspace for compression and decompression contexts */
+	{
+		/* Get parameters for compression level 3 and block size */
+		zstd_parameters params = zstd_get_params(3, LOLELFFS_BLOCK_SIZE);
+
+		comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size = zstd_cctx_workspace_bound(&params.cParams);
+		comp_ctx[LOLELFFS_COMP_ZSTD].workspace = vmalloc(comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size);
+
+		comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace_size = zstd_dctx_workspace_bound();
+		comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace = vmalloc(comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace_size);
+	}
+
+	if (comp_ctx[LOLELFFS_COMP_ZSTD].workspace && comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace) {
+		comp_ctx[LOLELFFS_COMP_ZSTD].available = true;
+		any_available = true;
+		pr_info("lolelffs: zstd compression initialized (cctx_size=%zu, dctx_size=%zu)\n",
+			comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size,
+			comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace_size);
+	} else {
+		pr_warn("lolelffs: zstd workspace allocation failed\n");
+		if (comp_ctx[LOLELFFS_COMP_ZSTD].workspace)
+			vfree(comp_ctx[LOLELFFS_COMP_ZSTD].workspace);
+		if (comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace)
+			vfree(comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace);
+		comp_ctx[LOLELFFS_COMP_ZSTD].workspace = NULL;
+		comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace = NULL;
+		comp_ctx[LOLELFFS_COMP_ZSTD].available = false;
+	}
 #else
 	comp_ctx[LOLELFFS_COMP_ZSTD].workspace = NULL;
 	comp_ctx[LOLELFFS_COMP_ZSTD].workspace_size = 0;
+	comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace = NULL;
+	comp_ctx[LOLELFFS_COMP_ZSTD].decomp_workspace_size = 0;
 	comp_ctx[LOLELFFS_COMP_ZSTD].available = false;
-	pr_info("lolelffs: zstd compression not available (disabled)\n");
+	pr_info("lolelffs: zstd compression not available (CONFIG_ZSTD not enabled)\n");
 #endif
 
 	if (!any_available) {
@@ -386,7 +424,11 @@ void lolelffs_comp_exit(void)
 		if (comp_ctx[i].workspace) {
 			vfree(comp_ctx[i].workspace);
 			comp_ctx[i].workspace = NULL;
-			comp_ctx[i].available = false;
 		}
+		if (comp_ctx[i].decomp_workspace) {
+			vfree(comp_ctx[i].decomp_workspace);
+			comp_ctx[i].decomp_workspace = NULL;
+		}
+		comp_ctx[i].available = false;
 	}
 }

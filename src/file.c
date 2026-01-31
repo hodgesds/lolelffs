@@ -239,14 +239,9 @@ error:
  * Called by the page cache to write a dirty folio to the physical disk (when
  * sync is called or when memory is needed).
  *
- * TODO: Implement encryption and compression during write. For now, data is
- * written uncompressed and unencrypted. Compressed/encrypted blocks can be
- * created using the Rust tools and read transparently via the read path.
- *
- * Write-side encryption requires:
- * 1. Kernel 6.2+ folio/writeback APIs
- * 2. Custom writepage implementation with compress-then-encrypt pipeline
- * 3. Proper extent metadata updates
+ * Implements transparent compression and encryption during write using a
+ * compress-then-encrypt pipeline. Extent metadata is updated to reflect
+ * the compression and encryption algorithms used for each block.
  */
 /* Helper function to write a single page/folio with compression and encryption */
 static int lolelffs_writepage_locked(struct folio *folio, struct writeback_control *wbc)
